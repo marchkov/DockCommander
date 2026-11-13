@@ -17,6 +17,9 @@ dotnet run --project src/DockCommander.App
 dotnet test DockCommander.slnx
 ```
 
+GitHub Actions runs that test suite on Windows and Ubuntu 24.04, and publishes the
+framework-dependent `win-x64` and `linux-x64` archives as workflow artifacts.
+
 For sandboxed builds that cannot write Avalonia's build telemetry log, set
 `$env:AVALONIA_TELEMETRY_OPTOUT = '1'` in that shell before building.
 See [Avalonia's build telemetry documentation](https://github.com/AvaloniaUI/Avalonia/wiki/Telemetry).

@@ -1,0 +1,51 @@
+name: Publish
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  AVALONIA_TELEMETRY_OPTOUT: 1
+  DOTNET_CLI_TELEMETRY_OPTOUT: 1
+  DOTNET_NOLOGO: 1
+
+jobs:
+  windows:
+    name: win-x64
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 10.0.x
+      - name: Publish
+        run: dotnet publish src/DockCommander.App -c Release -r win-x64 --self-contained false -o artifacts/win-x64 --nologo
+      - name: Archive
+        run: tar -C artifacts -a -cf DockCommander-win-x64.zip win-x64
+      - uses: actions/upload-artifact@v4
+        with:
+          name: DockCommander-win-x64
+          path: DockCommander-win-x64.zip
+          if-no-files-found: error
+
+  linux:
+    name: linux-x64
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 10.0.x
+      - name: Publish
+        run: dotnet publish src/DockCommander.App -c Release -r linux-x64 --self-contained false -o artifacts/linux-x64 --nologo
+      - name: Archive
+        run: tar -C artifacts -czf "$GITHUB_WORKSPACE/DockCommander-linux-x64.tar.gz" linux-x64
+      - uses: actions/upload-artifact@v4
+        with:
+          name: DockCommander-linux-x64
+          path: DockCommander-linux-x64.tar.gz
+          if-no-files-found: error
