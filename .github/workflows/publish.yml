@@ -3,10 +3,11 @@ name: Publish
 on:
   push:
     branches: [main]
+    tags: ["v*"]
   workflow_dispatch:
 
 permissions:
-  contents: read
+  contents: write
 
 env:
   AVALONIA_TELEMETRY_OPTOUT: 1
@@ -49,3 +50,23 @@ jobs:
           name: DockCommander-linux-x64
           path: DockCommander-linux-x64.tar.gz
           if-no-files-found: error
+
+  release:
+    name: GitHub release
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [windows, linux]
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+      - name: Create release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" \
+            dist/DockCommander-win-x64/DockCommander-win-x64.zip \
+            dist/DockCommander-linux-x64/DockCommander-linux-x64.tar.gz \
+            --title "$GITHUB_REF_NAME" \
+            --notes-file CHANGELOG.md

@@ -19,6 +19,8 @@ dotnet test DockCommander.slnx
 
 GitHub Actions runs that test suite on Windows and Ubuntu 24.04, and publishes the
 framework-dependent `win-x64` and `linux-x64` archives as workflow artifacts.
+A version tag also attaches those archives to the [GitHub release](https://github.com/marchkov/DockCommander/releases).
+See [CHANGELOG.md](CHANGELOG.md).
 
 For sandboxed builds that cannot write Avalonia's build telemetry log, set
 `$env:AVALONIA_TELEMETRY_OPTOUT = '1'` in that shell before building.
@@ -197,4 +199,4 @@ Linux x64 builds and GIO trash support are available. See [Debian/Ubuntu setup](
 
 ## License
 
-MIT. See [LICENSE](LICENSE).
+[MIT](LICENSE). Copyright (c) 2026 Denis Marchkov.
