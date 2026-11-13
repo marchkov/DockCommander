@@ -1,0 +1,5 @@
+<Solution>
+  <Project Path="src/DockCommander.Core/DockCommander.Core.csproj" />
+  <Project Path="src/DockCommander.App/DockCommander.App.csproj" />
+  <Project Path="tests/DockCommander.Tests/DockCommander.Tests.csproj" />
+</Solution>

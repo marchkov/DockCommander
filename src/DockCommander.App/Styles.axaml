@@ -1,0 +1,211 @@
+<Styles xmlns="https://github.com/avaloniaui" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+  <Styles.Resources>
+    <ResourceDictionary>
+      <ResourceDictionary.ThemeDictionaries>
+        <ResourceDictionary x:Key="Light">
+          <SolidColorBrush x:Key="CanvasBrush">#EEF1F6</SolidColorBrush>
+          <SolidColorBrush x:Key="SurfaceBrush">#FFFFFF</SolidColorBrush>
+          <SolidColorBrush x:Key="InsetBrush">#F6F8FB</SolidColorBrush>
+          <SolidColorBrush x:Key="LineBrush">#DDE3ED</SolidColorBrush>
+          <SolidColorBrush x:Key="TextBrush">#202B3D</SolidColorBrush>
+          <SolidColorBrush x:Key="MutedBrush">#65738A</SolidColorBrush>
+          <SolidColorBrush x:Key="AccentBrush">#3566CE</SolidColorBrush>
+          <SolidColorBrush x:Key="AccentSoftBrush">#EAF0FF</SolidColorBrush>
+          <SolidColorBrush x:Key="SelectionBrush">#DFEAFE</SolidColorBrush>
+          <SolidColorBrush x:Key="InactiveSelectionBrush">#EDF0F5</SolidColorBrush>
+          <SolidColorBrush x:Key="HoverBrush">#F0F4FA</SolidColorBrush>
+          <SolidColorBrush x:Key="FolderBrush">#B98421</SolidColorBrush>
+          <SolidColorBrush x:Key="FolderFillBrush">#FFF1C9</SolidColorBrush>
+          <SolidColorBrush x:Key="DangerBrush">#B53B4C</SolidColorBrush>
+          <SolidColorBrush x:Key="SuccessBrush">#288166</SolidColorBrush>
+        </ResourceDictionary>
+        <ResourceDictionary x:Key="Dark">
+          <SolidColorBrush x:Key="CanvasBrush">#131820</SolidColorBrush>
+          <SolidColorBrush x:Key="SurfaceBrush">#1C2330</SolidColorBrush>
+          <SolidColorBrush x:Key="InsetBrush">#171E29</SolidColorBrush>
+          <SolidColorBrush x:Key="LineBrush">#303B4D</SolidColorBrush>
+          <SolidColorBrush x:Key="TextBrush">#E2E8F3</SolidColorBrush>
+          <SolidColorBrush x:Key="MutedBrush">#9CAAC0</SolidColorBrush>
+          <SolidColorBrush x:Key="AccentBrush">#88B0FF</SolidColorBrush>
+          <SolidColorBrush x:Key="AccentSoftBrush">#273B5B</SolidColorBrush>
+          <SolidColorBrush x:Key="SelectionBrush">#2D466D</SolidColorBrush>
+          <SolidColorBrush x:Key="InactiveSelectionBrush">#2B3443</SolidColorBrush>
+          <SolidColorBrush x:Key="HoverBrush">#263142</SolidColorBrush>
+          <SolidColorBrush x:Key="FolderBrush">#E3BC70</SolidColorBrush>
+          <SolidColorBrush x:Key="FolderFillBrush">#433C2D</SolidColorBrush>
+          <SolidColorBrush x:Key="DangerBrush">#FF9AA8</SolidColorBrush>
+          <SolidColorBrush x:Key="SuccessBrush">#75C6A7</SolidColorBrush>
+        </ResourceDictionary>
+      </ResourceDictionary.ThemeDictionaries>
+    </ResourceDictionary>
+  </Styles.Resources>
+
+  <Style Selector="Window">
+    <Setter Property="Background" Value="{DynamicResource CanvasBrush}" />
+    <Setter Property="Foreground" Value="{DynamicResource TextBrush}" />
+    <Setter Property="FontSize" Value="13" />
+  </Style>
+  <Style Selector="TextBlock.muted"><Setter Property="Foreground" Value="{DynamicResource MutedBrush}" /></Style>
+  <Style Selector="TextBlock.accent"><Setter Property="Foreground" Value="{DynamicResource AccentBrush}" /></Style>
+  <Style Selector="TextBlock.mark"><Setter Property="Foreground" Value="{DynamicResource AccentBrush}" /></Style>
+  <Style Selector="TextBlock.error"><Setter Property="Foreground" Value="{DynamicResource DangerBrush}" /></Style>
+  <Style Selector="Path.glyph">
+    <Setter Property="Stroke" Value="{DynamicResource MutedBrush}" />
+    <Setter Property="StrokeThickness" Value="1.6" />
+    <Setter Property="StrokeLineCap" Value="Round" />
+    <Setter Property="StrokeJoin" Value="Round" />
+  </Style>
+  <Style Selector="Path.glyph.folder">
+    <Setter Property="Stroke" Value="{DynamicResource FolderBrush}" />
+    <Setter Property="Fill" Value="{DynamicResource FolderFillBrush}" />
+  </Style>
+  <Style Selector="Path.glyph.accent"><Setter Property="Stroke" Value="{DynamicResource AccentBrush}" /></Style>
+  <Style Selector="Path.glyph.danger"><Setter Property="Stroke" Value="{DynamicResource DangerBrush}" /></Style>
+
+  <Style Selector="Button">
+    <Setter Property="Background" Value="{DynamicResource SurfaceBrush}" />
+    <Setter Property="Foreground" Value="{DynamicResource TextBrush}" />
+    <Setter Property="BorderBrush" Value="{DynamicResource LineBrush}" />
+    <Setter Property="BorderThickness" Value="1" />
+    <Setter Property="CornerRadius" Value="6" />
+    <Setter Property="Padding" Value="12,7" />
+    <Setter Property="MinHeight" Value="32" />
+    <Setter Property="HorizontalContentAlignment" Value="Center" />
+    <Setter Property="VerticalContentAlignment" Value="Center" />
+    <Setter Property="Template">
+      <ControlTemplate>
+        <Border Name="Chrome" Background="{TemplateBinding Background}" BorderBrush="{TemplateBinding BorderBrush}"
+                BorderThickness="{TemplateBinding BorderThickness}" CornerRadius="{TemplateBinding CornerRadius}"
+                Padding="{TemplateBinding Padding}">
+          <ContentPresenter Name="PART_ContentPresenter" Content="{TemplateBinding Content}"
+                            ContentTemplate="{TemplateBinding ContentTemplate}" RecognizesAccessKey="True"
+                            HorizontalContentAlignment="{TemplateBinding HorizontalContentAlignment}"
+                            VerticalContentAlignment="{TemplateBinding VerticalContentAlignment}" />
+        </Border>
+      </ControlTemplate>
+    </Setter>
+  </Style>
+  <Style Selector="Button:pointerover"><Setter Property="Background" Value="{DynamicResource HoverBrush}" /></Style>
+  <Style Selector="Button:pressed"><Setter Property="Background" Value="{DynamicResource SelectionBrush}" /></Style>
+  <Style Selector="Button:focus-visible"><Setter Property="BorderBrush" Value="{DynamicResource AccentBrush}" /></Style>
+  <Style Selector="Button:disabled"><Setter Property="Opacity" Value="0.5" /></Style>
+  <Style Selector="Button.flat">
+    <Setter Property="Background" Value="Transparent" />
+    <Setter Property="BorderBrush" Value="Transparent" />
+    <Setter Property="Padding" Value="9,5" />
+    <Setter Property="MinHeight" Value="28" />
+  </Style>
+  <Style Selector="Button.flat:pointerover"><Setter Property="Background" Value="{DynamicResource HoverBrush}" /></Style>
+  <Style Selector="Button.caption-close:pointerover"><Setter Property="Background" Value="#C42B3B" /></Style>
+  <Style Selector="Button.caption-close:pressed"><Setter Property="Background" Value="#A82030" /></Style>
+  <Style Selector="Button.caption-close:pointerover Path.glyph"><Setter Property="Stroke" Value="White" /></Style>
+  <Style Selector="Button.chosen">
+    <Setter Property="Background" Value="{DynamicResource AccentSoftBrush}" />
+    <Setter Property="Foreground" Value="{DynamicResource AccentBrush}" />
+    <Setter Property="BorderBrush" Value="{DynamicResource AccentBrush}" />
+  </Style>
+  <Style Selector="Button.chosen Path.glyph"><Setter Property="Stroke" Value="{DynamicResource AccentBrush}" /></Style>
+  <Style Selector="Button.primary">
+    <Setter Property="Background" Value="{DynamicResource AccentSoftBrush}" />
+    <Setter Property="BorderBrush" Value="{DynamicResource AccentBrush}" />
+    <Setter Property="Foreground" Value="{DynamicResource AccentBrush}" />
+  </Style>
+  <Style Selector="Button.danger"><Setter Property="Foreground" Value="{DynamicResource DangerBrush}" /></Style>
+  <Style Selector="Border.theme-switch">
+    <Setter Property="Background" Value="{DynamicResource InsetBrush}" />
+    <Setter Property="BorderBrush" Value="{DynamicResource LineBrush}" />
+    <Setter Property="BorderThickness" Value="1" />
+    <Setter Property="CornerRadius" Value="8" />
+    <Setter Property="Padding" Value="3" />
+  </Style>
+  <Style Selector="Border.pane-frame">
+    <Setter Property="Background" Value="{DynamicResource SurfaceBrush}" />
+    <Setter Property="BorderBrush" Value="{DynamicResource LineBrush}" />
+    <Setter Property="BorderThickness" Value="1" />
+    <Setter Property="CornerRadius" Value="9" />
+    <Setter Property="ClipToBounds" Value="True" />
+  </Style>
+  <Style Selector="Border.pane-frame.active"><Setter Property="BorderBrush" Value="{DynamicResource AccentBrush}" /></Style>
+  <Style Selector="Border.pane-frame.drop-target"><Setter Property="BorderBrush" Value="{DynamicResource SuccessBrush}" /></Style>
+  <Style Selector="ListBox.file-list ListBoxItem.drop-target"><Setter Property="Background" Value="{DynamicResource AccentSoftBrush}" /></Style>
+  <Style Selector="Border.pane-top">
+    <Setter Property="Background" Value="{DynamicResource InsetBrush}" />
+    <Setter Property="Padding" Value="10,8" />
+    <Setter Property="CornerRadius" Value="8,8,0,0" />
+  </Style>
+  <Style Selector="Border.pane-frame.active Border.pane-top"><Setter Property="Background" Value="{DynamicResource AccentSoftBrush}" /></Style>
+  <Style Selector="Border.column-header">
+    <Setter Property="Background" Value="{DynamicResource InsetBrush}" />
+    <Setter Property="BorderBrush" Value="{DynamicResource LineBrush}" />
+    <Setter Property="BorderThickness" Value="0,1,0,1" />
+    <Setter Property="Padding" Value="0,6" />
+  </Style>
+  <Style Selector="Border.pane-footer">
+    <Setter Property="BorderBrush" Value="{DynamicResource LineBrush}" />
+    <Setter Property="BorderThickness" Value="0,1,0,0" />
+    <Setter Property="Padding" Value="12,7" />
+  </Style>
+  <Style Selector="TextBox.path-field">
+    <Setter Property="Background" Value="{DynamicResource SurfaceBrush}" />
+    <Setter Property="Foreground" Value="{DynamicResource TextBrush}" />
+    <Setter Property="BorderBrush" Value="{DynamicResource LineBrush}" />
+    <Setter Property="CornerRadius" Value="6" />
+    <Setter Property="Padding" Value="10,7" />
+    <Setter Property="FontSize" Value="13" />
+    <Setter Property="MinHeight" Value="34" />
+  </Style>
+  <Style Selector="ListBox.file-list">
+    <Setter Property="Background" Value="{DynamicResource SurfaceBrush}" />
+    <Setter Property="Foreground" Value="{DynamicResource TextBrush}" />
+    <Setter Property="BorderThickness" Value="0" />
+    <Setter Property="Padding" Value="0,4" />
+  </Style>
+  <Style Selector="ListBox.file-list ListBoxItem">
+    <Setter Property="Background" Value="Transparent" />
+    <Setter Property="Foreground" Value="{DynamicResource TextBrush}" />
+    <Setter Property="BorderBrush" Value="Transparent" />
+    <Setter Property="BorderThickness" Value="2,0,0,0" />
+    <Setter Property="Padding" Value="0" />
+    <Setter Property="MinHeight" Value="29" />
+    <Setter Property="HorizontalContentAlignment" Value="Stretch" />
+    <Setter Property="Template">
+      <ControlTemplate>
+        <Border Background="{TemplateBinding Background}" BorderBrush="{TemplateBinding BorderBrush}"
+                BorderThickness="{TemplateBinding BorderThickness}">
+          <ContentPresenter Name="PART_ContentPresenter" Content="{TemplateBinding Content}"
+                            ContentTemplate="{TemplateBinding ContentTemplate}" Padding="{TemplateBinding Padding}"
+                            HorizontalContentAlignment="{TemplateBinding HorizontalContentAlignment}" />
+        </Border>
+      </ControlTemplate>
+    </Setter>
+  </Style>
+  <Style Selector="ListBox.file-list ListBoxItem:pointerover"><Setter Property="Background" Value="{DynamicResource HoverBrush}" /></Style>
+  <Style Selector="ListBox.file-list ListBoxItem:selected"><Setter Property="Background" Value="{DynamicResource InactiveSelectionBrush}" /></Style>
+  <Style Selector="Border.pane-frame.active ListBox.file-list ListBoxItem:selected">
+    <Setter Property="Background" Value="{DynamicResource SelectionBrush}" />
+    <Setter Property="BorderBrush" Value="{DynamicResource AccentBrush}" />
+  </Style>
+  <Style Selector="ListBox.file-list ListBoxItem:focus-visible"><Setter Property="BorderBrush" Value="{DynamicResource AccentBrush}" /></Style>
+  <!-- Fluent also colors the presenter in selected/hover states. Keep the row's
+       own background so inactive-pane selection remains distinct in both themes. -->
+  <Style Selector="ListBox.file-list ListBoxItem:selected /template/ ContentPresenter#PART_ContentPresenter">
+    <Setter Property="Background" Value="Transparent" />
+    <Setter Property="Foreground" Value="{DynamicResource TextBrush}" />
+  </Style>
+  <Style Selector="ListBox.file-list ListBoxItem:pointerover /template/ ContentPresenter#PART_ContentPresenter">
+    <Setter Property="Background" Value="Transparent" />
+    <Setter Property="Foreground" Value="{DynamicResource TextBrush}" />
+  </Style>
+  <Style Selector="ListBox.file-list ListBoxItem:selected:pointerover /template/ ContentPresenter#PART_ContentPresenter">
+    <Setter Property="Background" Value="Transparent" />
+    <Setter Property="Foreground" Value="{DynamicResource TextBrush}" />
+  </Style>
+  <Style Selector="Border.keycap">
+    <Setter Property="Background" Value="{DynamicResource InsetBrush}" />
+    <Setter Property="CornerRadius" Value="4" />
+    <Setter Property="Padding" Value="5,2" />
+  </Style>
+  <Style Selector="Window.dialog">
+    <Setter Property="Background" Value="{DynamicResource SurfaceBrush}" />
+  </Style>
+</Styles>
