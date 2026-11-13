@@ -25,6 +25,11 @@ jobs:
           dotnet-version: 10.0.x
       - name: Publish
         run: dotnet publish src/DockCommander.App -c Release -r win-x64 --self-contained false -o artifacts/win-x64 --nologo
+      - name: Add installer
+        run: |
+          Copy-Item packaging/check-dotnet.ps1 artifacts/win-x64/
+          Copy-Item packaging/windows/install.ps1 artifacts/win-x64/
+          Copy-Item packaging/windows/uninstall.ps1 artifacts/win-x64/
       - name: Archive
         run: tar -C artifacts -a -cf DockCommander-win-x64.zip win-x64
       - uses: actions/upload-artifact@v4
@@ -43,8 +48,19 @@ jobs:
           dotnet-version: 10.0.x
       - name: Publish
         run: dotnet publish src/DockCommander.App -c Release -r linux-x64 --self-contained false -o artifacts/linux-x64 --nologo
+      - name: Add installer
+        run: |
+          cp packaging/check-dotnet.sh packaging/linux/install.sh artifacts/linux-x64/
+          chmod +x artifacts/linux-x64/DC artifacts/linux-x64/check-dotnet.sh artifacts/linux-x64/install.sh
       - name: Archive
         run: tar -C artifacts -czf "$GITHUB_WORKSPACE/DockCommander-linux-x64.tar.gz" linux-x64
+      - name: Package deb
+        run: sh packaging/linux/build-deb.sh artifacts/linux-x64 artifacts/DockCommander-linux-x64.deb
+      - uses: actions/upload-artifact@v4
+        with:
+          name: DockCommander-linux-x64-deb
+          path: artifacts/DockCommander-linux-x64.deb
+          if-no-files-found: error
       - uses: actions/upload-artifact@v4
         with:
           name: DockCommander-linux-x64
@@ -68,5 +84,6 @@ jobs:
           gh release create "$GITHUB_REF_NAME" \
             dist/DockCommander-win-x64/DockCommander-win-x64.zip \
             dist/DockCommander-linux-x64/DockCommander-linux-x64.tar.gz \
+            dist/DockCommander-linux-x64-deb/DockCommander-linux-x64.deb \
             --title "$GITHUB_REF_NAME" \
             --notes-file CHANGELOG.md

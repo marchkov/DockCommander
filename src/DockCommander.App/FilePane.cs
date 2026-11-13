@@ -54,6 +54,7 @@ internal sealed class FilePane : UserControl
     private List<FileRow> _rows = [];
     private int _anchor;
     private HashSet<string>? _rangeMarkBase;
+    private Task _navigation = Task.CompletedTask;
     public IFileSystemProvider Provider { get; }
     public string CurrentPath { get; private set; }
     public event Action<FilePane>? Activated;
@@ -260,7 +261,44 @@ internal sealed class FilePane : UserControl
         _moreLocations.Classes.Set("chosen", _locationButtons.Any(item => !item.Button.IsVisible && item.Button.Classes.Contains("chosen")));
     }
 
-    public async Task NavigateAsync(string path, string? selectPath = null, string? renamedFrom = null)
+    public Task NavigateAsync(string path, string? selectPath = null, string? renamedFrom = null) =>
+        QueueNavigation(() => NavigateCore(path, selectPath, renamedFrom));
+
+    public Task RefreshAsync() => QueueNavigation(() => NavigateCore(CurrentPath, null, null));
+
+    private Task QueueNavigation(Func<Task> action)
+    {
+        var gate = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var previous = _navigation;
+        _navigation = gate.Task;
+        _ = Drain();
+        return gate.Task;
+
+        async Task Drain()
+        {
+            try { await previous.ConfigureAwait(false); } catch { /* A failed listing must not block the next one. */ }
+            try
+            {
+                await RunOnUiAsync(action);
+                gate.TrySetResult();
+            }
+            catch (Exception ex) { gate.TrySetException(ex); }
+        }
+    }
+
+    private static Task RunOnUiAsync(Func<Task> action)
+    {
+        if (Dispatcher.UIThread.CheckAccess()) return action();
+        var done = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        Dispatcher.UIThread.Post(async () =>
+        {
+            try { await action(); done.TrySetResult(); }
+            catch (Exception ex) { done.TrySetException(ex); }
+        });
+        return done.Task;
+    }
+
+    private async Task NavigateCore(string path, string? selectPath, string? renamedFrom)
     {
         EndRange();
         var normalized = Provider.NormalizePath(path);
@@ -320,11 +358,10 @@ internal sealed class FilePane : UserControl
             _list.ScrollIntoView(index);
             Dispatcher.UIThread.Post(() =>
             {
-                if (IsEffectivelyEnabled && _list.SelectedIndex == index)
-                {
-                    _list.ContainerFromIndex(index)?.Focus();
-                    _list.SelectedIndex = index;
-                }
+                if (!IsEffectivelyEnabled || _list.SelectedIndex != index) return;
+                if (TopLevel.GetTopLevel(this) is Window owner && owner.OwnedWindows.Any()) return;
+                _list.ContainerFromIndex(index)?.Focus();
+                _list.SelectedIndex = index;
             }, DispatcherPriority.Input);
         }
     }

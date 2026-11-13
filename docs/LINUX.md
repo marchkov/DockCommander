@@ -73,4 +73,9 @@ including GIO trash and recovery metadata.
 The graphical application also passed a five-second startup smoke check under WSLg.
 Debian and a native desktop session still
 need manual validation of window decoration, hotkey conflicts, and native drag/drop.
-No `.deb` installer or automatic .NET installation is included yet.
+
+`sh packaging/linux/install.sh` checks for the .NET 10 runtime, then installs the published folder
+to `~/.local/share/dockcommander` and adds `~/.local/bin/dc`. The command checks the runtime again
+before starting `DC`. `packaging/linux/build-deb.sh` packs a `.deb` that depends on
+`dotnet-runtime-10.0`, `libx11-6`, `libice6`, `libsm6`, `libfontconfig1`, `libglib2.0-bin`, and
+`xdg-utils`. Neither installer downloads or bundles .NET.

@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.2.0
+
+Copy and move enter a queue. One transfer runs at a time, and the panes stay usable for the next copy or move.
+Delete, rename, and new folder wait until that queue is empty.
+Windows and Debian/Ubuntu installers check for the .NET 10 x64 runtime and stop when it is missing. The runtime is still not bundled.
+
 ## 0.1.0
 
 First public release for Windows x64 and Debian/Ubuntu x64.

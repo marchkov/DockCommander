@@ -19,7 +19,7 @@ dotnet test DockCommander.slnx
 
 GitHub Actions runs that test suite on Windows and Ubuntu 24.04, and publishes the
 framework-dependent `win-x64` and `linux-x64` archives as workflow artifacts.
-A version tag also attaches those archives to the [GitHub release](https://github.com/marchkov/DockCommander/releases).
+A version tag also attaches those archives, and the Debian package, to the [GitHub release](https://github.com/marchkov/DockCommander/releases).
 See [CHANGELOG.md](CHANGELOG.md).
 
 For sandboxed builds that cannot write Avalonia's build telemetry log, set
@@ -34,8 +34,24 @@ dotnet publish src/DockCommander.App -c Release -r win-x64 --self-contained fals
 ```
 
 Keep the published files together. This is a folder distribution, not a standalone EXE.
-The target computer needs the **.NET 10 runtime (x64)**. The installer, runtime detection,
-and installation prompt are deferred to the packaging milestone. No runtime is bundled.
+The target computer needs the **.NET 10 x64 runtime**. No runtime is bundled.
+
+Install after publishing. The installer checks for `Microsoft.NETCore.App` 10 x64 and stops
+when it is missing. On Windows, install the .NET 10 Desktop Runtime x64. On Debian/Ubuntu,
+install the `dotnet-runtime-10.0` package.
+
+```powershell
+powershell -File packaging/windows/install.ps1 -Source artifacts/win-x64
+```
+
+```sh
+sh packaging/linux/install.sh
+```
+
+The Windows script copies the folder to `%LOCALAPPDATA%\DockCommander` and adds a Start menu shortcut.
+`packaging/windows/uninstall.ps1` removes that copy. The Linux script installs into
+`~/.local/share/dockcommander` and writes `~/.local/bin/dc`, which checks the runtime again before launch.
+`packaging/linux/build-deb.sh` builds a `.deb` that depends on `dotnet-runtime-10.0` and the native libraries.
 
 ## Implemented
 
@@ -49,6 +65,9 @@ and installation prompt are deferred to the packaging milestone. No runtime is b
 - Compact Name / Type / Size / Modified columns; directories before files.
 - Restrained active-pane border, local timestamps, preserved cursor and marks on refresh.
 - Local recursive copy and move through an operation service, outside the UI thread.
+  Confirmed copies and moves enter a queue. One runs at a time; further copies and moves can be
+  queued while the panes stay usable. Waiting items can be removed. Esc cancels the running transfer.
+  Delete, rename, and new folder wait until the queue is empty.
 - Copy/move progress below the panes shows both the whole batch and the current file.
   A cancellable scan counts files and bytes before any changes. Overall progress includes
   skipped files as processed work and displays their count separately; it is not a count
@@ -92,7 +111,7 @@ and installation prompt are deferred to the packaging milestone. No runtime is b
 | F7 | Create directory |
 | F8 | Move selected entries to the recycle bin, after confirmation |
 | Shift+F8 | Delete permanently, after separate confirmation |
-| Esc | Cancel a dialog or request cancellation of the running operation |
+| Esc | Cancel a dialog, or cancel the transfer that is running. Waiting transfers stay queued |
 
 A dot marks selected entries independently of the cursor. Copy, move and delete use all marked entries;
 if none are marked, they use the current row. The parent row is never operated on.
@@ -162,7 +181,8 @@ Dialogs follow the main window's theme. Theme colors and styles live in
   Cross-drive moves commit the copy before deleting the source; a failed source deletion may leave both copies.
 - Copies are staged beside the destination before replacing an existing file.
   A process crash may leave a clearly named `.dc-*.tmp` file.
-- Only one operation runs at a time. Cross-provider transfers and a transfer queue are deferred.
+- One transfer runs at a time. More copies and moves wait in the queue. Delete, rename, and new folder
+  are refused while that queue is not empty. Cross-provider transfers are deferred.
 - External opening and editing require a provider to expose an existing local file.
 
 ## Tests
@@ -189,9 +209,8 @@ Run this test in a normal Windows session; a restricted sandbox may make recycli
 - `DockCommander.App`: panes, dialogs, settings, composition, Windows recycle-bin adapter.
 - [Provider lifecycle and guarantees](docs/PLUGIN_API.md).
 
-Supported systems are Windows and Debian/Ubuntu. Next: a transfer queue, then an installer
-and .NET 10 runtime check for those two systems. Dynamic plugin loading and remote or archive
-providers come later.
+Supported systems are Windows and Debian/Ubuntu. Copy and move are queued, and the installers
+check for the .NET 10 x64 runtime. Dynamic plugin loading and remote or archive providers come later.
 
 The active solution is `DockCommander.slnx` in the repository root.
 

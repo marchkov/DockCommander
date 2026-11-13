@@ -35,3 +35,9 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y libx11-6 libice6 libsm6 libfontconfig1
       - name: Test
         run: dotnet test DockCommander.slnx --nologo
+      - name: Runtime check self-test
+        if: runner.os == 'Windows'
+        run: powershell -NoProfile -File packaging/check-dotnet.ps1 -SelfTest
+      - name: Runtime check self-test
+        if: runner.os == 'Linux'
+        run: sh packaging/check-dotnet.sh --self-test

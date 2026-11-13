@@ -35,7 +35,7 @@ public sealed class WindowTests
             right.RequestExternalDrop([folder, child, folder], right.CurrentPath);
             await WaitUntil(() => window.OwnedWindows.Any());
             Press(window.OwnedWindows.Single(), Key.Enter);
-            await WaitUntil(() => right.IsEnabled);
+            await WaitUntilReady(window, right);
             Assert.Equal("external", File.ReadAllText(Path.Combine(right.CurrentPath, "tree/a.txt")));
             Assert.True(File.Exists(child));
             Assert.False(File.Exists(Path.Combine(right.CurrentPath, "a.txt")));
@@ -83,7 +83,7 @@ public sealed class WindowTests
             right.RequestDrop(payload, target, true);
             await WaitUntil(() => window.OwnedWindows.Any());
             Press(window.OwnedWindows.Single(), Key.Enter);
-            await WaitUntil(() => left.IsEnabled);
+            await WaitUntilReady(window, left);
             Assert.False(File.Exists(source)); Assert.True(File.Exists(Path.Combine(target, "a.txt")));
         }
         finally { await Close(window); }
@@ -113,7 +113,7 @@ public sealed class WindowTests
                 .RaiseEvent(new RoutedEventArgs(MenuItem.ClickEvent));
             await WaitUntil(() => window.OwnedWindows.Any());
             Press(window.OwnedWindows.Single(), Key.Enter);
-            await WaitUntil(() => left.IsEnabled);
+            await WaitUntilReady(window, left);
             Assert.True(File.Exists(Path.Combine(right.CurrentPath, "b.md")));
             Assert.False(File.Exists(Path.Combine(right.CurrentPath, "a.txt")));
         }
@@ -234,12 +234,13 @@ public sealed class WindowTests
             Press(window, Key.F5);
             await WaitUntil(() => window.OwnedWindows.Any());
             Press(window.OwnedWindows.Single(), Key.Enter);
-            await WaitUntil(() => window.OwnedWindows.Any(w => w.Title == "Destination exists"));
+            await WaitUntil(() => window.OwnedWindows.Any(w => w.Title == "Destination exists" &&
+                w.FocusManager!.GetFocusedElement() is Button { Content: "Overwrite" }));
             var conflict = window.OwnedWindows.Single();
             Assert.Equal(WindowDecorations.None, conflict.WindowDecorations);
             Assert.Equal("Overwrite", Assert.IsType<Button>(conflict.FocusManager!.GetFocusedElement()).Content);
             Press(conflict, Key.Enter);
-            await WaitUntil(() => left.IsEnabled);
+            await WaitUntilReady(window, left);
             Assert.Equal("new", File.ReadAllText(destination));
         }
         finally { await Close(window); }
@@ -277,6 +278,9 @@ public sealed class WindowTests
         if (window.IsVisible) window.KeyRelease(key, modifiers, PhysicalKey.None, null);
     }
 
+    private static Task WaitUntilReady(MainWindow window, FilePane pane) =>
+        WaitUntil(() => pane.IsEnabled && window.TransfersIdle);
+
     private static async Task WaitUntil(Func<bool> predicate)
     {
         for (var i = 0; i < 200; i++)
@@ -288,12 +292,12 @@ public sealed class WindowTests
         Assert.True(predicate(), "The UI did not reach the expected state.");
     }
 
-    private static async Task<(MainWindow Window, FilePane Left, FilePane Right, SettingsStore Settings)> Open(ScratchDirectory temp, ITrashService? trash = null, IExternalFileLauncher? launcher = null)
+    private static async Task<(MainWindow Window, FilePane Left, FilePane Right, SettingsStore Settings)> Open(ScratchDirectory temp, ITrashService? trash = null, IExternalFileLauncher? launcher = null, IFileSystemProvider? provider = null)
     {
         var left = temp.Folder("left"); var right = temp.Folder("right");
         var store = new SettingsStore(Path.Combine(temp.Root, "settings.json"));
         await store.SaveAsync(new(left, right));
-        var window = new MainWindow(store, new LocalFileSystemProvider(trash), launcher);
+        var window = new MainWindow(store, provider ?? new LocalFileSystemProvider(trash), launcher);
         window.Show();
         var panes = window.GetVisualDescendants().OfType<FilePane>().ToArray();
         await WaitUntil(() => panes.All(p => p.IsEnabled && p.CurrentPath.StartsWith(temp.Root, StringComparison.Ordinal)));
@@ -303,7 +307,7 @@ public sealed class WindowTests
     private static async Task Close(MainWindow window)
     {
         foreach (var child in window.OwnedWindows.ToArray()) child.Close();
-        await WaitUntil(() => window.GetVisualDescendants().OfType<FilePane>().All(p => p.IsEnabled));
+        await WaitUntil(() => window.TransfersIdle && window.GetVisualDescendants().OfType<FilePane>().All(p => p.IsEnabled));
         window.Close();
         await WaitUntil(() => !window.IsVisible);
     }
@@ -353,7 +357,7 @@ public sealed class WindowTests
             Assert.Equal(WindowDecorations.None, window.OwnedWindows.Single().WindowDecorations);
             Assert.Equal("Copy", Assert.IsType<Button>(window.OwnedWindows.Single().FocusManager!.GetFocusedElement()).Content);
             Press(window.OwnedWindows.Single(), Key.Enter);
-            await WaitUntil(() => left.IsEnabled);
+            await WaitUntilReady(window, left);
             Assert.Equal("source", File.ReadAllText(Path.Combine(right.CurrentPath, "a.txt")));
             Assert.Equal(source, left.CurrentEntry!.FullPath);
             Assert.IsType<ListBoxItem>(window.FocusManager!.GetFocusedElement());
@@ -619,6 +623,76 @@ public sealed class WindowTests
             Assert.Single(launcher.Edited);
         }
         finally { await Close(window); }
+    }
+
+    [AvaloniaFact]
+    public async Task SecondCopyWaitsAndDeleteStaysClosedUntilTheTransferFinishes()
+    {
+        using var temp = new ScratchDirectory();
+        var first = temp.File("left/a.txt", "one");
+        var second = temp.File("left/b.txt", "two");
+        var provider = new GatedTransferProvider(new LocalFileSystemProvider());
+        var (window, left, right, _) = await Open(temp, provider: provider);
+        try
+        {
+            await left.NavigateAsync(left.CurrentPath, first); left.FocusList();
+            Press(window, Key.F5);
+            await WaitUntil(() => window.OwnedWindows.Any());
+            Press(window.OwnedWindows.Single(), Key.Enter);
+            await WaitUntil(() => provider.Transfers == 1 && left.IsEnabled);
+            Assert.False(File.Exists(Path.Combine(right.CurrentPath, "a.txt")));
+            await left.NavigateAsync(left.CurrentPath, second);
+            Press(window, Key.F5);
+            await WaitUntil(() => window.OwnedWindows.Any());
+            Press(window.OwnedWindows.Single(), Key.Enter);
+            await WaitUntil(() => window.WaitingTransfers == 1 && left.IsEnabled);
+            Assert.Equal(1, provider.Transfers);
+            Press(window, Key.F8);
+            await WaitUntil(() => window.GetVisualDescendants().OfType<TextBlock>().Any(block =>
+                block.Text?.Contains("still queued", StringComparison.Ordinal) == true));
+            Assert.Empty(window.OwnedWindows);
+            Assert.True(File.Exists(first));
+            window.GetVisualDescendants().OfType<Button>().Single(button => button.Name == "RemoveQueuedTransfer")
+                .RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+            await WaitUntil(() => window.WaitingTransfers == 0);
+            provider.Release();
+            await WaitUntilReady(window, left);
+            Assert.Equal("one", File.ReadAllText(Path.Combine(right.CurrentPath, "a.txt")));
+            Assert.False(File.Exists(Path.Combine(right.CurrentPath, "b.txt")));
+            Assert.Equal(1, provider.Transfers);
+        }
+        finally { provider.Release(); await Close(window); }
+    }
+
+    private sealed class GatedTransferProvider(IFileSystemProvider inner) : IFileSystemProvider
+    {
+        private readonly TaskCompletionSource _gate = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        private int _transfers;
+        public int Transfers => _transfers;
+        public void Release() => _gate.TrySetResult();
+        public string Id => inner.Id;
+        public string DisplayName => inner.DisplayName;
+        public bool SupportsRecycle => inner.SupportsRecycle;
+        public StringComparer PathComparer => inner.PathComparer;
+        public bool CanHandle(string path) => inner.CanHandle(path);
+        public string NormalizePath(string path) => inner.NormalizePath(path);
+        public string CombinePath(string directory, string name) => inner.CombinePath(directory, name);
+        public bool IsSameOrDescendant(string path, string ancestor) => inner.IsSameOrDescendant(path, ancestor);
+        public Task<IReadOnlyList<LocationEntry>> GetLocationsAsync(CancellationToken cancellationToken = default) => inner.GetLocationsAsync(cancellationToken);
+        public Task<IReadOnlyList<FileEntry>> ListAsync(string path, CancellationToken cancellationToken = default) => inner.ListAsync(path, cancellationToken);
+        public Task<FileEntry?> GetEntryAsync(string path, CancellationToken cancellationToken = default) => inner.GetEntryAsync(path, cancellationToken);
+        public Task CreateDirectoryAsync(string path, CancellationToken cancellationToken = default) => inner.CreateDirectoryAsync(path, cancellationToken);
+        public Task DeleteAsync(string path, DeleteMode mode, CancellationToken cancellationToken = default) => inner.DeleteAsync(path, mode, cancellationToken);
+        public Task RemoveEmptyDirectoryAsync(string path, CancellationToken cancellationToken = default) => inner.RemoveEmptyDirectoryAsync(path, cancellationToken);
+        public Task CopyFileAsync(string sourcePath, string destinationPath, bool overwrite, CancellationToken cancellationToken = default) => inner.CopyFileAsync(sourcePath, destinationPath, overwrite, cancellationToken);
+        public Task MoveFileAsync(string sourcePath, string destinationPath, bool overwrite, CancellationToken cancellationToken = default) => inner.MoveFileAsync(sourcePath, destinationPath, overwrite, cancellationToken);
+        public async Task TransferFileAsync(string sourcePath, string destinationPath, bool overwrite, bool move,
+            IProgress<long>? bytesCopied, CancellationToken cancellationToken = default)
+        {
+            Interlocked.Increment(ref _transfers);
+            await _gate.Task.WaitAsync(cancellationToken);
+            await inner.TransferFileAsync(sourcePath, destinationPath, overwrite, move, bytesCopied, cancellationToken);
+        }
     }
 
     private sealed class RecordingLauncher : IExternalFileLauncher

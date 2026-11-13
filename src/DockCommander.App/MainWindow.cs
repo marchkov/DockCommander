@@ -19,11 +19,15 @@ namespace DockCommander.App;
 public sealed class MainWindow : Window
 {
     private readonly FileOperationService _operations = new();
+    private readonly TransferQueue _transfers;
     private readonly SettingsStore _settings;
     private readonly IExternalFileLauncher _launcher;
     private readonly TextPreviewService _textPreview = new();
     private readonly StackPanel _transferPanel = new() { IsVisible = false, Spacing = 5, Margin = new Thickness(0, 8, 0, 0) };
+    private readonly StackPanel _queueHost = new() { Spacing = 4 };
+    private readonly TextBlock _jobText = new() { FontSize = 12, FontWeight = FontWeight.SemiBold, TextTrimming = TextTrimming.CharacterEllipsis };
     private readonly TextBlock _transferText = new() { TextTrimming = TextTrimming.CharacterEllipsis, FontSize = 12 };
+    private DispatcherTimer? _transferTimer;
     private readonly ProgressBar _transferBar = new() { Minimum = 0, Maximum = 100, Height = 5 };
     private readonly TextBlock _batchText = new() { FontSize = 12, TextTrimming = TextTrimming.CharacterEllipsis };
     private readonly ProgressBar _batchBar = new() { Minimum = 0, Maximum = 100, Height = 7 };
@@ -56,6 +60,9 @@ public sealed class MainWindow : Window
     {
         _settings = settings;
         _launcher = launcher ?? new ExternalFileLauncher();
+        _transfers = new(_operations);
+        _transfers.Changed += () => Dispatcher.UIThread.Post(UpdateQueuePanel);
+        _transfers.JobCompleted = FinishTransferAsync;
         Title = "DockCommander";
         ExtendClientAreaToDecorationsHint = true;
         WindowDecorations = WindowDecorations.None;
@@ -75,11 +82,9 @@ public sealed class MainWindow : Window
         _transferText.VerticalAlignment = VerticalAlignment.Center;
         transferHeader.Children.Add(_transferText);
         Grid.SetColumn(_cancelTransfer, 1); transferHeader.Children.Add(_cancelTransfer);
-        _cancelTransfer.Click += (_, _) =>
-        {
-            _operationCancellation?.Cancel(); _cancelTransfer.IsEnabled = false;
-            _transferText.Text = "Cancelling… Completed files will be kept.";
-        };
+        _cancelTransfer.Click += (_, _) => CancelRunningTransfer();
+        _transferPanel.Children.Add(_queueHost);
+        _transferPanel.Children.Add(_jobText);
         _transferPanel.Children.Add(_batchText); _transferPanel.Children.Add(_batchBar);
         _transferPanel.Children.Add(transferHeader); _transferPanel.Children.Add(_transferBar);
         var statusBody = new StackPanel { Spacing = 6 };
@@ -167,6 +172,7 @@ public sealed class MainWindow : Window
         AddHandler(KeyDownEvent, OnKeyDown, RoutingStrategies.Tunnel);
         Opened += async (_, _) => await RunAsync(InitializeAsync);
         Closing += OnClosing;
+        Closed += (_, _) => _ = _transfers.DisposeAsync().AsTask();
         SizeChanged += (_, _) =>
         {
             if (WindowState == WindowState.Normal && !_saving)
@@ -337,8 +343,11 @@ public sealed class MainWindow : Window
             _operationCancellation.Dispose(); _operationCancellation = null;
             _left.IsEnabled = _right.IsEnabled = _keys.IsEnabled = true;
             _busy = false;
-            _active.FocusList();
-            Dispatcher.UIThread.Post(() => { if (!_busy && !_saving) _active.FocusList(); }, DispatcherPriority.Background);
+            if (_transfers.IsIdle) _active.FocusList();
+            Dispatcher.UIThread.Post(() =>
+            {
+                if (!_busy && !_saving && _transfers.IsIdle && !OwnedWindows.Any()) _active.FocusList();
+            }, DispatcherPriority.Background);
         }
     }
 
@@ -394,6 +403,7 @@ public sealed class MainWindow : Window
 
     private async Task RenameAsync()
     {
+        if (TransferBlocksMutation()) return;
         var pane = _active;
         if (pane.CurrentEntry is not { Name: not ".." } entry)
         { SetStatus("Select a file or folder to rename."); return; }
@@ -418,56 +428,144 @@ public sealed class MainWindow : Window
         if (!await Dialogs.ConfirmAsync(this, move ? "Move" : "Copy",
                 $"{(move ? "Move" : "Copy")} {Describe(entries)}\n\nFrom: {sourceDescription ?? source.CurrentPath}\nTo: {destinationDirectory}",
                 move ? "Move" : "Copy")) return;
-        _transferPanel.IsVisible = true; _cancelTransfer.IsEnabled = true;
-        _transferText.Text = move ? "Preparing move…" : "Preparing copy…";
-        _transferBar.IsIndeterminate = true;
-        TransferProgress? latest = null;
-        BatchTransferProgress? batch = null;
-        _batchText.Text = "Scanning files…"; _batchBar.IsIndeterminate = true;
-        var timer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(100) };
-        timer.Tick += (_, _) =>
+        var snapshot = entries.ToArray();
+        var leaf = System.IO.Path.GetFileName(destinationDirectory.TrimEnd(System.IO.Path.DirectorySeparatorChar, System.IO.Path.AltDirectorySeparatorChar));
+        if (string.IsNullOrEmpty(leaf)) leaf = destinationDirectory;
+        var what = snapshot.Length == 1 ? snapshot[0].Name : $"{snapshot.Length} entries";
+        var label = $"{(move ? "Move" : "Copy")} {what} → {leaf}";
+        _transfers.Enqueue(new TransferRequest
         {
-            if (_operationCancellation!.IsCancellationRequested)
-            {
-                _transferText.Text = "Cancelling… Completed files will be kept.";
-                _cancelTransfer.IsEnabled = false; return;
-            }
-            var total = Volatile.Read(ref batch);
-            if (total is not null)
-            {
-                _batchBar.IsIndeterminate = total.IsScanning;
-                var percent = total.TotalBytes is > 0 ? 100d * total.ProcessedBytes / total.TotalBytes.Value :
-                    total.TotalFiles > 0 ? 100d * total.ProcessedFiles / total.TotalFiles : 0;
-                _batchBar.Value = total.IsCompleted ? 100 : Math.Clamp(percent, 0, 99.9);
-                _batchText.Text = total.IsScanning ? $"Scanning: {total.Path}" :
-                    $"Overall: {total.ProcessedFiles} / {total.TotalFiles} files · skipped: {total.SkippedFiles}" +
-                    (total.TotalBytes is long bytes ? $" · {total.ProcessedBytes / 1048576d:0.0} / {bytes / 1048576d:0.0} MiB processed" : "");
-            }
-            var value = Volatile.Read(ref latest);
-            if (value is null) return;
-            _transferBar.IsIndeterminate = value.FileSize is null or <= 0;
-            _transferBar.Value = value.FileSize is > 0 ? Math.Clamp(100d * value.BytesTransferred / value.FileSize.Value, 0, 100) : 0;
-            _transferText.Text = $"{(move ? "Moving" : "Copying")}: {value.Path} · {value.BytesTransferred / 1048576d:0.0} MiB" +
-                (value.FileSize is long size ? $" / {size / 1048576d:0.0} MiB (current file)" : "");
-            ToolTip.SetTip(_transferText, value.Path);
-        };
-        timer.Start();
-        try
-        {
-        await WithRefreshAsync(async () =>
-        {
-            var result = await _operations.TransferAsync(source.Provider, destination.Provider, entries, destinationDirectory,
-                move, conflict => Dialogs.ConflictAsync(this, conflict), Progress(), _operationCancellation!.Token,
-                new InlineProgress<TransferProgress>(value => Volatile.Write(ref latest, value)),
-                new InlineProgress<BatchTransferProgress>(value => Volatile.Write(ref batch, value)));
-            return $"Completed: {result.Completed}; skipped or partially transferred: {result.Skipped}.";
+            Source = source.Provider, Destination = destination.Provider, Entries = snapshot,
+            DestinationDirectory = destinationDirectory, Move = move, Label = label,
+            ResolveConflict = ResolveConflictOnUi
         });
-        }
-        finally { timer.Stop(); _transferPanel.IsVisible = false; }
+        SetStatus($"{label} queued.");
     }
+
+    private Task<ConflictResolution> ResolveConflictOnUi(FileConflict conflict)
+    {
+        if (Dispatcher.UIThread.CheckAccess()) return Dialogs.ConflictAsync(this, conflict);
+        var done = new TaskCompletionSource<ConflictResolution>(TaskCreationOptions.RunContinuationsAsynchronously);
+        Dispatcher.UIThread.Post(async () =>
+        {
+            try { done.TrySetResult(await Dialogs.ConflictAsync(this, conflict)); }
+            catch (Exception ex) { done.TrySetException(ex); }
+        });
+        return done.Task;
+    }
+
+    private async Task FinishTransferAsync(string message)
+    {
+        var done = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        Dispatcher.UIThread.Post(async () =>
+        {
+            try
+            {
+                foreach (var pane in new[] { _left, _right })
+                {
+                    try { await pane.RefreshAsync(); }
+                    catch (Exception ex) { message += $" Refresh failed: {ex.Message}"; }
+                }
+                SetStatus(message);
+                if (_transfers.WaitingCount == 0 && !_busy && !_saving && !OwnedWindows.Any()) _active.FocusList();
+                done.TrySetResult();
+            }
+            catch (Exception ex) { done.TrySetException(ex); }
+        });
+        await done.Task;
+    }
+
+    private void CancelRunningTransfer()
+    {
+        _transfers.CancelRunning();
+        _cancelTransfer.IsEnabled = false;
+        _transferText.Text = "Cancelling… Completed files will be kept.";
+    }
+
+    private void UpdateQueuePanel()
+    {
+        var jobs = _transfers.Snapshot();
+        _queueHost.Children.Clear();
+        var waiting = jobs.Where(job => job.State == TransferQueueState.Waiting).ToArray();
+        if (waiting.Length > 0)
+        {
+            var header = new Grid { ColumnDefinitions = new ColumnDefinitions("*,Auto") };
+            header.Children.Add(new TextBlock { Text = $"Waiting · {waiting.Length}", FontSize = 12, VerticalAlignment = VerticalAlignment.Center });
+            var clear = new Button { Name = "ClearWaitingTransfers", Content = "Clear waiting", Padding = new Thickness(8, 2) };
+            clear.Classes.Add("flat");
+            clear.Click += (_, _) => _transfers.ClearWaiting();
+            Grid.SetColumn(clear, 1); header.Children.Add(clear);
+            _queueHost.Children.Add(header);
+            foreach (var job in waiting)
+            {
+                var row = new Grid { ColumnDefinitions = new ColumnDefinitions("*,Auto") };
+                var caption = new TextBlock { Text = job.Label, FontSize = 12, TextTrimming = TextTrimming.CharacterEllipsis, VerticalAlignment = VerticalAlignment.Center };
+                ToolTip.SetTip(caption, job.DestinationDirectory);
+                row.Children.Add(caption);
+                var remove = new Button { Name = "RemoveQueuedTransfer", Content = "Remove", Padding = new Thickness(8, 2), Tag = job.Id };
+                remove.Classes.Add("flat");
+                remove.Click += (_, _) => _transfers.Cancel(job.Id);
+                Grid.SetColumn(remove, 1); row.Children.Add(remove);
+                _queueHost.Children.Add(row);
+            }
+        }
+        var running = jobs.FirstOrDefault(job => job.State == TransferQueueState.Running);
+        _jobText.Text = running?.Label ?? (waiting.Length > 0 ? "Waiting to start…" : "");
+        _transferPanel.IsVisible = jobs.Count > 0;
+        _cancelTransfer.IsEnabled = running is not null && !_transfers.IsCancelRequested;
+        if (jobs.Count == 0)
+        {
+            _transferTimer?.Stop();
+            return;
+        }
+        _transferTimer ??= new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(100) };
+        if (_transferTimer.Tag is null)
+        {
+            _transferTimer.Tag = true;
+            _transferTimer.Tick += (_, _) => PaintTransfer();
+        }
+        if (!_transferTimer.IsEnabled) _transferTimer.Start();
+        PaintTransfer();
+    }
+
+    private void PaintTransfer()
+    {
+        if (_transfers.IsCancelRequested)
+        {
+            _transferText.Text = "Cancelling… Completed files will be kept.";
+            _cancelTransfer.IsEnabled = false;
+        }
+        var total = _transfers.BatchProgress;
+        if (total is null)
+        {
+            _batchBar.IsIndeterminate = true;
+            _batchText.Text = "Scanning files…";
+        }
+        else
+        {
+            _batchBar.IsIndeterminate = total.IsScanning;
+            var percent = total.TotalBytes is > 0 ? 100d * total.ProcessedBytes / total.TotalBytes.Value :
+                total.TotalFiles > 0 ? 100d * total.ProcessedFiles / total.TotalFiles : 0;
+            _batchBar.Value = total.IsCompleted ? 100 : Math.Clamp(percent, 0, 99.9);
+            _batchText.Text = total.IsScanning ? $"Scanning: {total.Path}" :
+                $"Overall: {total.ProcessedFiles} / {total.TotalFiles} files · skipped: {total.SkippedFiles}" +
+                (total.TotalBytes is long bytes ? $" · {total.ProcessedBytes / 1048576d:0.0} / {bytes / 1048576d:0.0} MiB processed" : "");
+        }
+        var value = _transfers.FileProgress;
+        if (value is null || _transfers.IsCancelRequested) return;
+        _transferBar.IsIndeterminate = value.FileSize is null or <= 0;
+        _transferBar.Value = value.FileSize is > 0 ? Math.Clamp(100d * value.BytesTransferred / value.FileSize.Value, 0, 100) : 0;
+        _transferText.Text = $"{value.Path} · {value.BytesTransferred / 1048576d:0.0} MiB" +
+            (value.FileSize is long size ? $" / {size / 1048576d:0.0} MiB (current file)" : "");
+        ToolTip.SetTip(_transferText, value.Path);
+    }
+
+    internal bool TransfersIdle => _transfers.IsIdle;
+    internal int WaitingTransfers => _transfers.WaitingCount;
 
     private async Task CreateDirectoryAsync()
     {
+        if (TransferBlocksMutation()) return;
         var pane = _active;
         var name = await Dialogs.PromptAsync(this, "Create directory", $"In: {pane.CurrentPath}\n\nDirectory name:");
         if (name is null) return;
@@ -478,6 +576,7 @@ public sealed class MainWindow : Window
 
     private async Task DeleteAsync(bool permanent)
     {
+        if (TransferBlocksMutation()) return;
         var pane = _active; var entries = pane.OperationEntries;
         if (entries.Count == 0) { SetStatus("Select a file or folder first."); return; }
         if (!permanent && !pane.Provider.SupportsRecycle)
@@ -510,6 +609,13 @@ public sealed class MainWindow : Window
             catch (Exception ex) { message += $" Refresh failed: {ex.Message}"; }
         }
         SetStatus(message);
+    }
+
+    private bool TransferBlocksMutation()
+    {
+        if (_transfers.IsIdle) return false;
+        SetStatus("A copy or move is still queued. Cancel it before deleting, renaming, or creating a folder.");
+        return true;
     }
 
     private IProgress<string> Progress() => new Progress<string>(text => { if (_busy) SetStatus(text + " · Esc cancels after the current file"); });
@@ -556,6 +662,11 @@ public sealed class MainWindow : Window
         {
             if (e.Key == Key.Escape) _operationCancellation?.Cancel();
             e.Handled = true; return;
+        }
+        var typing = e.Source is Visual source && (source is TextBox || source.GetVisualAncestors().OfType<TextBox>().Any());
+        if (e.Key == Key.Escape && !_transfers.IsIdle && !typing)
+        {
+            e.Handled = true; CancelRunningTransfer(); return;
         }
         if (e.Key == Key.T && e.KeyModifiers.HasFlag(KeyModifiers.Control) && e.KeyModifiers.HasFlag(KeyModifiers.Shift))
         {
@@ -607,7 +718,13 @@ public sealed class MainWindow : Window
     {
         if (_allowClose) return;
         e.Cancel = true;
-        if (_busy) { SetStatus("An operation is in progress. Press Esc to cancel, then close the window."); return; }
+        if (_busy || !_transfers.IsIdle)
+        {
+            SetStatus(_busy
+                ? "An operation is in progress. Press Esc to cancel, then close the window."
+                : "A copy or move is still queued. Cancel it, then close the window.");
+            return;
+        }
         if (_saving) return;
         _saving = true;
         try
