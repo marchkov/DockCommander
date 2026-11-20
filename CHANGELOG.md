@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.2.1
+
 - The Windows uninstaller removes only files recorded by the installer. A folder that merely contains `DC.exe` is left alone.
 - Installer self-tests cover update, removal, a missing .NET 10 runtime, and a runtime of the wrong architecture.
 - Linux installation adds an application-menu entry. The required framework is Microsoft.NETCore.App 10 x64. There is no Windows GUI installer.
