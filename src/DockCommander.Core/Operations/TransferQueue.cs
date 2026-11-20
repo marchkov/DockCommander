@@ -16,6 +16,7 @@ public sealed class TransferRequest
     public required bool Move { get; init; }
     public required string Label { get; init; }
     public required Func<FileConflict, Task<ConflictResolution>> ResolveConflict { get; init; }
+    public Func<FileConflict, CancellationToken, Task<ConflictResolution>>? ResolveConflictWithCancellation { get; init; }
 }
 
 public sealed class TransferQueue : IAsyncDisposable
@@ -28,6 +29,7 @@ public sealed class TransferQueue : IAsyncDisposable
     private int _outstanding;
     private TaskCompletionSource _idle = CompletedIdle();
     private readonly Task _worker;
+    private bool _disposed;
 
     public TransferQueue(FileOperationService operations)
     {
@@ -68,15 +70,20 @@ public sealed class TransferQueue : IAsyncDisposable
 
     public QueuedTransfer Enqueue(TransferRequest request)
     {
-        ObjectDisposedException.ThrowIf(_incoming.Reader.Completion.IsCompleted, this);
-        var work = new Work(request);
+        Work work;
         lock (_sync)
         {
+            ObjectDisposedException.ThrowIf(_disposed, this);
+            work = new Work(request);
             _waiting.Add(work);
             if (_outstanding == 0) _idle = new(TaskCreationOptions.RunContinuationsAsynchronously);
             _outstanding++;
+            if (!_incoming.Writer.TryWrite(work))
+            {
+                _waiting.Remove(work); FinishLocked(); work.Cancellation.Dispose();
+                throw new ObjectDisposedException(nameof(TransferQueue));
+            }
         }
-        if (!_incoming.Writer.TryWrite(work)) throw new ObjectDisposedException(nameof(TransferQueue));
         Changed?.Invoke();
         return work.Describe(TransferQueueState.Waiting);
     }
@@ -106,13 +113,11 @@ public sealed class TransferQueue : IAsyncDisposable
 
     public void ClearWaiting()
     {
-        Work[] waiting;
         lock (_sync)
         {
-            waiting = _waiting.ToArray();
+            foreach (var work in _waiting) work.Cancel();
             _waiting.Clear();
         }
-        foreach (var work in waiting) work.Cancel();
         Changed?.Invoke();
     }
 
@@ -123,9 +128,17 @@ public sealed class TransferQueue : IAsyncDisposable
 
     public async ValueTask DisposeAsync()
     {
-        _incoming.Writer.TryComplete();
-        CancelRunning();
-        ClearWaiting();
+        lock (_sync)
+        {
+            if (!_disposed)
+            {
+                _disposed = true;
+                _incoming.Writer.TryComplete();
+                _running?.Cancel();
+                foreach (var work in _waiting) work.Cancel();
+                _waiting.Clear();
+            }
+        }
         try { await _worker.ConfigureAwait(false); }
         catch (OperationCanceledException) { }
     }
@@ -139,6 +152,7 @@ public sealed class TransferQueue : IAsyncDisposable
                 _waiting.Remove(work);
                 if (work.IsCanceled)
                 {
+                    work.Cancellation.Dispose();
                     FinishLocked();
                     continue;
                 }
@@ -161,6 +175,7 @@ public sealed class TransferQueue : IAsyncDisposable
                 if (ReferenceEquals(_running, work)) _running = null;
                 FileProgress = null;
                 BatchProgress = null;
+                work.Cancellation.Dispose();
                 FinishLocked();
             }
             Changed?.Invoke();
@@ -172,7 +187,16 @@ public sealed class TransferQueue : IAsyncDisposable
         try
         {
             var result = await _operations.TransferAsync(work.Request.Source, work.Request.Destination, work.Request.Entries,
-                work.Request.DestinationDirectory, work.Request.Move, work.Request.ResolveConflict,
+                work.Request.DestinationDirectory, work.Request.Move, async conflict =>
+                {
+                    var token = work.Cancellation.Token;
+                    token.ThrowIfCancellationRequested();
+                    var resolution = work.Request.ResolveConflictWithCancellation is { } resolve
+                        ? resolve(conflict, token) : work.Request.ResolveConflict(conflict);
+                    var result = await resolution.WaitAsync(token);
+                    token.ThrowIfCancellationRequested();
+                    return result;
+                },
                 progress: null, work.Cancellation.Token,
                 new InlineProgress<TransferProgress>(value => FileProgress = value),
                 new InlineProgress<BatchTransferProgress>(value => BatchProgress = value));

@@ -37,6 +37,8 @@ internal sealed class FilePane : UserControl
     private Control? _dropRow;
     public bool IsDragging { get; private set; }
     public event Action<FilePane, string>? ActionRequested;
+    public event Action<FilePane, IReadOnlyList<string>, PixelPoint>? SystemMenuRequested;
+    private bool _systemMenuGesture;
     public event Action<FilePane, DraggedEntries, string, bool>? DropRequested;
     public event Action<FilePane, IReadOnlyList<string>, string>? ExternalDropRequested;
     public event Action<string>? InteractionError;
@@ -135,8 +137,14 @@ internal sealed class FilePane : UserControl
             menu.Items.Add(item);
         }
         _list.ContextMenu = menu;
+        menu.Opening += (_, e) =>
+        {
+            if (_systemMenuGesture && SystemMenuRequested is not null) e.Cancel = true;
+        };
         _list.ContextRequested += (_, e) =>
         {
+            var systemMenu = _systemMenuGesture;
+            _systemMenuGesture = false;
             var onRow = false;
             if (e.TryGetPosition(_list, out var point))
             {
@@ -150,6 +158,14 @@ internal sealed class FilePane : UserControl
                 onRow = row?.DataContext is FileRow;
             }
             ConfigureContextMenu(onRow);
+            if (systemMenu && SystemMenuRequested is not null && e.TryGetPosition(_list, out var menuPoint))
+            {
+                e.Handled = true;
+                // The parent row is navigation, not an operation target.
+                if (onRow && CurrentEntry?.Name == "..") return;
+                var paths = onRow ? OperationEntries.Select(entry => entry.FullPath).ToArray() : [];
+                SystemMenuRequested.Invoke(this, paths, _list.PointToScreen(menuPoint));
+            }
         };
         void Add(Control control, int row) { Grid.SetRow(control, row); grid.Children.Add(control); }
     }
@@ -404,6 +420,7 @@ internal sealed class FilePane : UserControl
         var properties = e.GetCurrentPoint(_list).Properties;
         if (properties.IsRightButtonPressed)
         {
+            _systemMenuGesture = OperatingSystem.IsWindows() && e.KeyModifiers.HasFlag(KeyModifiers.Shift);
             EndRange();
             Activated?.Invoke(this);
             if (container?.DataContext is FileRow clicked)

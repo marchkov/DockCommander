@@ -1,9 +1,9 @@
 name: Test
 
 on:
-  push:
-    branches: [main]
   pull_request:
+  workflow_call:
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -37,7 +37,16 @@ jobs:
         run: dotnet test DockCommander.slnx --nologo
       - name: Runtime check self-test
         if: runner.os == 'Windows'
-        run: powershell -NoProfile -File packaging/check-dotnet.ps1 -SelfTest
+        run: |
+          powershell -NoProfile -File packaging/check-dotnet.ps1 -SelfTest
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          powershell -NoProfile -File packaging/windows/uninstall.ps1 -SelfTest
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          powershell -NoProfile -File packaging/windows/install.ps1 -SelfTest
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Runtime check self-test
         if: runner.os == 'Linux'
-        run: sh packaging/check-dotnet.sh --self-test
+        run: |
+          set -eu
+          sh packaging/check-dotnet.sh --self-test
+          sh packaging/linux/install.sh --self-test

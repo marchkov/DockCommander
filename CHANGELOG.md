@@ -1,5 +1,22 @@
 # Changelog
 
+## Unreleased
+
+- The Windows uninstaller removes only files recorded by the installer. A folder that merely contains `DC.exe` is left alone.
+- Installer self-tests cover update, removal, a missing .NET 10 runtime, and a runtime of the wrong architecture.
+- Linux installation adds an application-menu entry. The required framework is Microsoft.NETCore.App 10 x64. There is no Windows GUI installer.
+- Match the Windows Shell popup menu to DockCommander's light/dark theme on supported
+  Windows versions; preserve Windows high-contrast mode and native fallback.
+- Windows: Shift + right-click opens the classic Shell menu for files, marked selections,
+  or the folder background. Keep Linux behavior unchanged; block the Shell menu during queued transfers.
+- Require Windows and Ubuntu tests before packaging or releasing the same commit, including tag and manual builds.
+- Cancel transfers while waiting for conflict resolution, including the rename prompt.
+- Synchronize queue clearing and disposal with new work; release cancellation resources.
+- Cover job/refresh failures, cancellation, shutdown, conflict dialogs, and window close protection.
+- Open saved folders without waiting for slow or disconnected drives. Discover locations
+  once in the background for both panes and cancel discovery when the window closes.
+- Isolate UI tests from host drives; cover delayed discovery and window shutdown.
+
 ## 0.2.0
 
 Copy and move enter a queue. One transfer runs at a time, and the panes stay usable for the next copy or move.

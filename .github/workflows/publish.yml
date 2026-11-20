@@ -7,7 +7,7 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: write
+  contents: read
 
 env:
   AVALONIA_TELEMETRY_OPTOUT: 1
@@ -15,8 +15,13 @@ env:
   DOTNET_NOLOGO: 1
 
 jobs:
+  tests:
+    name: Required tests
+    uses: ./.github/workflows/test.yml
+
   windows:
     name: win-x64
+    needs: tests
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
@@ -40,6 +45,7 @@ jobs:
 
   linux:
     name: linux-x64
+    needs: tests
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
@@ -50,8 +56,8 @@ jobs:
         run: dotnet publish src/DockCommander.App -c Release -r linux-x64 --self-contained false -o artifacts/linux-x64 --nologo
       - name: Add installer
         run: |
-          cp packaging/check-dotnet.sh packaging/linux/install.sh artifacts/linux-x64/
-          chmod +x artifacts/linux-x64/DC artifacts/linux-x64/check-dotnet.sh artifacts/linux-x64/install.sh
+          cp packaging/check-dotnet.sh packaging/linux/install.sh packaging/linux/uninstall.sh packaging/linux/dockcommander.desktop icon.png artifacts/linux-x64/
+          chmod +x artifacts/linux-x64/DC artifacts/linux-x64/check-dotnet.sh artifacts/linux-x64/install.sh artifacts/linux-x64/uninstall.sh
       - name: Archive
         run: tar -C artifacts -czf "$GITHUB_WORKSPACE/DockCommander-linux-x64.tar.gz" linux-x64
       - name: Package deb
@@ -69,6 +75,8 @@ jobs:
 
   release:
     name: GitHub release
+    permissions:
+      contents: write
     if: startsWith(github.ref, 'refs/tags/v')
     needs: [windows, linux]
     runs-on: ubuntu-24.04

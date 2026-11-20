@@ -10,6 +10,7 @@ using Avalonia.VisualTree;
 using Avalonia.Styling;
 using DockCommander.App;
 using DockCommander.Core.Files;
+using DockCommander.Core.Operations;
 using DockCommander.App.Platform;
 using Xunit;
 
@@ -17,6 +18,108 @@ namespace DockCommander.Tests;
 
 public sealed class WindowTests
 {
+    [AvaloniaTheory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task CancelingConflictClosesItsDialogIncludingRename(bool rename)
+    {
+        using var temp = new ScratchDirectory();
+        var sourcePath = temp.File("left/a.txt", "incoming");
+        var destinationPath = temp.File("right/a.txt", "keep");
+        var (window, _, _, _) = await Open(temp);
+        using var cancellation = new CancellationTokenSource();
+        try
+        {
+            var provider = new LocalFileSystemProvider();
+            var conflict = new FileConflict((await provider.GetEntryAsync(sourcePath))!,
+                (await provider.GetEntryAsync(destinationPath))!);
+            var pending = Dialogs.ConflictAsync(window, conflict, cancellation.Token);
+            await WaitUntil(() => window.OwnedWindows.Any());
+            if (rename)
+            {
+                window.OwnedWindows.Single().GetVisualDescendants().OfType<Button>()
+                    .Single(button => Equals(button.Content, "Rename"))
+                    .RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+                await WaitUntil(() => window.OwnedWindows.Any(dialog => dialog.Title == "Rename incoming entry"));
+            }
+            await Task.Run(() => cancellation.Cancel());
+            await WaitUntil(() => pending.IsCompleted && !window.OwnedWindows.Any());
+            await Assert.ThrowsAnyAsync<OperationCanceledException>(() => pending);
+            Assert.Equal("keep", File.ReadAllText(destinationPath));
+        }
+        finally { cancellation.Cancel(); await Close(window); }
+    }
+
+    [AvaloniaFact]
+    public async Task WindowRefusesToCloseDuringTransferAndClosesAfterEscapeCancelsIt()
+    {
+        using var temp = new ScratchDirectory();
+        var source = temp.File("left/a.txt", "incoming");
+        var provider = new GatedTransferProvider(new LocalFileSystemProvider());
+        var (window, left, right, _) = await Open(temp, provider: provider);
+        try
+        {
+            await left.NavigateAsync(left.CurrentPath, source); left.FocusList();
+            Press(window, Key.F5);
+            await WaitUntil(() => window.OwnedWindows.Any());
+            Press(window.OwnedWindows.Single(), Key.Enter);
+            await WaitUntil(() => provider.Transfers == 1 && left.IsEnabled);
+            window.Close();
+            Assert.True(window.IsVisible);
+            Press(window, Key.Escape);
+            await WaitUntilReady(window, left);
+            Assert.True(File.Exists(source));
+            Assert.False(File.Exists(Path.Combine(right.CurrentPath, "a.txt")));
+            window.Close();
+            await WaitUntil(() => !window.IsVisible);
+        }
+        finally { provider.Release(); if (window.IsVisible) await Close(window); }
+    }
+
+    [AvaloniaFact]
+    public async Task SlowLocationDiscoveryDoesNotBlockFoldersOrKeyboardAndLoadsBothPanesOnce()
+    {
+        using var temp = new ScratchDirectory();
+        var gate = new TaskCompletionSource<IReadOnlyList<LocationEntry>>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var calls = 0;
+        var (window, left, right, _) = await Open(temp, locations: token =>
+        {
+            calls++;
+            return gate.Task.WaitAsync(token);
+        });
+        try
+        {
+            Assert.False(gate.Task.IsCompleted);
+            Assert.Equal(1, calls);
+            Assert.Equal(Path.Combine(temp.Root, "left"), left.CurrentPath);
+            Assert.Equal(Path.Combine(temp.Root, "right"), right.CurrentPath);
+            Press(window, Key.F7);
+            await WaitUntil(() => window.OwnedWindows.Any());
+            Press(window.OwnedWindows.Single(), Key.Escape);
+            await WaitUntil(() => left.IsEnabled);
+            gate.SetResult([new("test", "Test location", temp.Root)]);
+            await WaitUntil(() => new[] { left, right }.All(pane => pane.GetVisualDescendants().OfType<Button>()
+                .Any(button => Avalonia.Automation.AutomationProperties.GetName(button) == "Test location")));
+            Assert.Equal(1, calls);
+        }
+        finally { await Close(window); }
+    }
+
+    [AvaloniaFact]
+    public async Task ClosingWindowCancelsPendingLocationDiscovery()
+    {
+        using var temp = new ScratchDirectory();
+        var gate = new TaskCompletionSource<IReadOnlyList<LocationEntry>>(TaskCreationOptions.RunContinuationsAsynchronously);
+        CancellationToken observed = default;
+        var (window, _, _, _) = await Open(temp, locations: token =>
+        {
+            observed = token;
+            return gate.Task.WaitAsync(token);
+        });
+        await Close(window);
+        Assert.True(observed.IsCancellationRequested);
+    }
+
     [AvaloniaFact]
     public async Task ExternalDropCopiesOnceAfterConfirmationAndKeepsOriginals()
     {
@@ -292,12 +395,16 @@ public sealed class WindowTests
         Assert.True(predicate(), "The UI did not reach the expected state.");
     }
 
-    private static async Task<(MainWindow Window, FilePane Left, FilePane Right, SettingsStore Settings)> Open(ScratchDirectory temp, ITrashService? trash = null, IExternalFileLauncher? launcher = null, IFileSystemProvider? provider = null)
+    private static async Task<(MainWindow Window, FilePane Left, FilePane Right, SettingsStore Settings)> Open(ScratchDirectory temp, ITrashService? trash = null, IExternalFileLauncher? launcher = null, IFileSystemProvider? provider = null,
+        Func<CancellationToken, Task<IReadOnlyList<LocationEntry>>>? locations = null)
     {
         var left = temp.Folder("left"); var right = temp.Folder("right");
         var store = new SettingsStore(Path.Combine(temp.Root, "settings.json"));
         await store.SaveAsync(new(left, right));
-        var window = new MainWindow(store, provider ?? new LocalFileSystemProvider(trash), launcher);
+        var root = Path.GetPathRoot(temp.Root)!;
+        var isolated = new FixedLocationsProvider(provider ?? new LocalFileSystemProvider(trash),
+            locations ?? (_ => Task.FromResult<IReadOnlyList<LocationEntry>>([new(root, root, root)])));
+        var window = new MainWindow(store, isolated, launcher);
         window.Show();
         var panes = window.GetVisualDescendants().OfType<FilePane>().ToArray();
         await WaitUntil(() => panes.All(p => p.IsEnabled && p.CurrentPath.StartsWith(temp.Root, StringComparison.Ordinal)));

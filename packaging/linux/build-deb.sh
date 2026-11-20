@@ -16,7 +16,8 @@ fi
 
 stage=$(mktemp -d)
 trap 'rm -rf "$stage"' EXIT
-mkdir -p "$stage/usr/lib/dockcommander" "$stage/usr/bin" "$stage/DEBIAN"
+mkdir -p "$stage/usr/lib/dockcommander" "$stage/usr/bin" \
+    "$stage/usr/share/applications" "$stage/usr/share/icons/hicolor/256x256/apps" "$stage/DEBIAN"
 cp -a "$source"/. "$stage/usr/lib/dockcommander/"
 chmod 755 "$stage/usr/lib/dockcommander/DC"
 cat > "$stage/usr/bin/dc" << 'EOF'
@@ -28,6 +29,8 @@ fi
 exec /usr/lib/dockcommander/DC "$@"
 EOF
 chmod 755 "$stage/usr/bin/dc"
+sed "s|@EXEC@|/usr/bin/dc|" "$root/packaging/linux/dockcommander.desktop" > "$stage/usr/share/applications/dockcommander.desktop"
+cp "$root/icon.png" "$stage/usr/share/icons/hicolor/256x256/apps/dockcommander.png"
 cat > "$stage/DEBIAN/control" << EOF
 Package: dockcommander
 Version: ${version}

@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=DockCommander
+GenericName=File manager
+Comment=Two-pane file manager
+Exec=@EXEC@
+Icon=dockcommander
+Terminal=false
+Categories=System;FileTools;FileManager;
+StartupWMClass=DC

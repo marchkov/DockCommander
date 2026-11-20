@@ -21,6 +21,7 @@ public sealed class MainWindow : Window
     private readonly FileOperationService _operations = new();
     private readonly TransferQueue _transfers;
     private readonly SettingsStore _settings;
+    private readonly CancellationTokenSource _windowLifetime = new();
     private readonly IExternalFileLauncher _launcher;
     private readonly TextPreviewService _textPreview = new();
     private readonly StackPanel _transferPanel = new() { IsVisible = false, Spacing = 5, Margin = new Thickness(0, 8, 0, 0) };
@@ -133,6 +134,30 @@ public sealed class MainWindow : Window
             });
             pane.OpenRequested += async p => await RunAsync(() => OpenAsync(p));
             pane.InteractionError += message => SetStatus($"Error: {message}");
+            if (OperatingSystem.IsWindows())
+                pane.SystemMenuRequested += (p, paths, point) => Dispatcher.UIThread.Post(async () =>
+                {
+                    if (!_transfers.IsIdle)
+                    {
+                        SetStatus("System menu is unavailable while transfers are still queued.");
+                        return;
+                    }
+                    await RunAsync(async () =>
+                    {
+                        SetActive(p);
+                        try
+                        {
+                            if (OperatingSystem.IsWindows())
+                                WindowsShellMenu.Show(TryGetPlatformHandle()?.Handle ?? 0, p.CurrentPath, paths, point.X, point.Y,
+                                    ActualThemeVariant == ThemeVariant.Dark);
+                        }
+                        finally
+                        {
+                            await _left.RefreshAsync();
+                            await _right.RefreshAsync();
+                        }
+                    });
+                });
             pane.ExternalDropRequested += async (target, paths, directory) => await RunAsync(async () =>
             {
                 SetActive(target);
@@ -172,7 +197,12 @@ public sealed class MainWindow : Window
         AddHandler(KeyDownEvent, OnKeyDown, RoutingStrategies.Tunnel);
         Opened += async (_, _) => await RunAsync(InitializeAsync);
         Closing += OnClosing;
-        Closed += (_, _) => _ = _transfers.DisposeAsync().AsTask();
+        Closed += (_, _) =>
+        {
+            _windowLifetime.Cancel();
+            _windowLifetime.Dispose();
+            _ = _transfers.DisposeAsync().AsTask();
+        };
         SizeChanged += (_, _) =>
         {
             if (WindowState == WindowState.Normal && !_saving)
@@ -309,8 +339,6 @@ public sealed class MainWindow : Window
         if (_settings.LoadWarning is { } warning) warnings.Add(warning);
         foreach (var (pane, path) in new[] { (_left, settings.LeftPath), (_right, settings.RightPath) })
         {
-            try { await pane.LoadLocationsAsync(); }
-            catch (Exception ex) { warnings.Add(ex.Message); }
             try { await pane.NavigateAsync(path); }
             catch (Exception ex)
             {
@@ -321,6 +349,25 @@ public sealed class MainWindow : Window
         }
         SetActive(settings.LeftActive ? _left : _right);
         SetStatus(warnings.Count == 0 ? "Ready · Insert marks files · F8 recycle · Shift+F8 delete permanently" : string.Join(" | ", warnings));
+        // A disconnected drive may take seconds to answer IsReady. Open the saved
+        // folders first and discover locations independently, once for both panes.
+        _ = LoadStartupLocationsAsync(_windowLifetime.Token);
+    }
+
+    private async Task LoadStartupLocationsAsync(CancellationToken cancellationToken)
+    {
+        try
+        {
+            var locations = await _left.Provider.GetLocationsAsync(cancellationToken);
+            cancellationToken.ThrowIfCancellationRequested();
+            _left.SetLocations(locations); _right.SetLocations(locations);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { }
+        catch (Exception ex)
+        {
+            if (!cancellationToken.IsCancellationRequested && !_busy && _transfers.IsIdle)
+                SetStatus($"Could not load locations: {ex.Message}");
+        }
     }
 
     private void SetActive(FilePane pane)
@@ -437,18 +484,19 @@ public sealed class MainWindow : Window
         {
             Source = source.Provider, Destination = destination.Provider, Entries = snapshot,
             DestinationDirectory = destinationDirectory, Move = move, Label = label,
-            ResolveConflict = ResolveConflictOnUi
+            ResolveConflict = conflict => ResolveConflictOnUi(conflict, CancellationToken.None),
+            ResolveConflictWithCancellation = ResolveConflictOnUi
         });
         SetStatus($"{label} queued.");
     }
 
-    private Task<ConflictResolution> ResolveConflictOnUi(FileConflict conflict)
+    private Task<ConflictResolution> ResolveConflictOnUi(FileConflict conflict, CancellationToken cancellationToken)
     {
-        if (Dispatcher.UIThread.CheckAccess()) return Dialogs.ConflictAsync(this, conflict);
+        if (Dispatcher.UIThread.CheckAccess()) return Dialogs.ConflictAsync(this, conflict, cancellationToken);
         var done = new TaskCompletionSource<ConflictResolution>(TaskCreationOptions.RunContinuationsAsynchronously);
         Dispatcher.UIThread.Post(async () =>
         {
-            try { done.TrySetResult(await Dialogs.ConflictAsync(this, conflict)); }
+            try { done.TrySetResult(await Dialogs.ConflictAsync(this, conflict, cancellationToken)); }
             catch (Exception ex) { done.TrySetException(ex); }
         });
         return done.Task;

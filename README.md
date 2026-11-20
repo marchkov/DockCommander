@@ -34,11 +34,11 @@ dotnet publish src/DockCommander.App -c Release -r win-x64 --self-contained fals
 ```
 
 Keep the published files together. This is a folder distribution, not a standalone EXE.
-The target computer needs the **.NET 10 x64 runtime**. No runtime is bundled.
-
-Install after publishing. The installer checks for `Microsoft.NETCore.App` 10 x64 and stops
-when it is missing. On Windows, install the .NET 10 Desktop Runtime x64. On Debian/Ubuntu,
-install the `dotnet-runtime-10.0` package.
+No runtime is bundled. The required framework is **Microsoft.NETCore.App 10, x64**.
+On Windows, the .NET 10 Desktop Runtime x64 includes that framework and is the download to use.
+On Debian/Ubuntu, install the package `dotnet-runtime-10.0`. A 32-bit or ARM64 runtime is not accepted.
+The installer also accepts a non-standard x64 `dotnet` host, including one selected with `DOTNET_ROOT`,
+when `dotnet --list-runtimes` lists Microsoft.NETCore.App 10.
 
 ```powershell
 powershell -File packaging/windows/install.ps1 -Source artifacts/win-x64
@@ -48,10 +48,17 @@ powershell -File packaging/windows/install.ps1 -Source artifacts/win-x64
 sh packaging/linux/install.sh
 ```
 
-The Windows script copies the folder to `%LOCALAPPDATA%\DockCommander` and adds a Start menu shortcut.
-`packaging/windows/uninstall.ps1` removes that copy. The Linux script installs into
-`~/.local/share/dockcommander` and writes `~/.local/bin/dc`, which checks the runtime again before launch.
-`packaging/linux/build-deb.sh` builds a `.deb` that depends on `dotnet-runtime-10.0` and the native libraries.
+The Windows script copies the folder to `%LOCALAPPDATA%\DockCommander`, records the copied files,
+and adds a Start menu shortcut. Running it again updates that copy and removes files that belonged
+to the previous copy. `packaging/windows/uninstall.ps1` removes only the recorded files and the
+matching shortcut. Anything else in the folder is left in place. A folder that merely contains
+`DC.exe` is not an installation and is not deleted. There is no separate Windows GUI installer:
+the PowerShell script is the installer, and it does not embed .NET.
+
+The Linux script installs into `~/.local/share/dockcommander`, writes `~/.local/bin/dc`, and adds
+a DockCommander entry to the application menu. `packaging/linux/uninstall.sh` removes that recorded
+copy. `packaging/linux/build-deb.sh` builds a `.deb` that depends on `dotnet-runtime-10.0` and the
+native libraries, and installs the same menu entry for all users.
 
 ## Implemented
 
@@ -132,6 +139,13 @@ surrounding quotes. Use Ctrl+R after saving changes in the external editor.
 
 ## Mouse
 
+- Windows: Shift + right-click opens the classic Windows Shell context menu for the
+  clicked file or marked selection. The menu follows the app's light/dark theme on
+  supported Windows versions; Windows high contrast takes priority.
+  On empty space it opens the folder background menu;
+  the parent row (`..`) is excluded. It is unavailable while transfers are queued.
+  Shell commands run outside DockCommander's transfer queue; both panes refresh after
+  the menu command returns. Linux keeps the existing DockCommander menu.
 - Click selects the current row; double-click opens a file or directory.
 - Ctrl+click toggles a mark; Shift+click marks a range.
 - Right-click opens the action menu for the clicked row. Right-clicking a marked row
@@ -203,6 +217,8 @@ Remove-Item Env:DC_TEST_RECYCLE
 Run this test in a normal Windows session; a restricted sandbox may make recycling unavailable.
 
 ## Architecture and next milestone
+
+See the [current roadmap and audit](docs/ROADMAP.md) for completed work and remaining priorities.
 
 - `DockCommander.Core`: provider/plugin contracts, local filesystem provider, operation service;
   no Avalonia dependency.

@@ -63,8 +63,10 @@ internal static class Dialogs
         return (window, body, buttons);
     }
 
-    public static async Task<string?> PromptAsync(Window owner, string title, string message, string initial = "", bool allowEmpty = false)
+    public static async Task<string?> PromptAsync(Window owner, string title, string message, string initial = "", bool allowEmpty = false,
+        CancellationToken cancellationToken = default)
     {
+        cancellationToken.ThrowIfCancellationRequested();
         var (window, body, buttons) = Create(owner, title, message);
         var input = new TextBox { Text = initial };
         input.Classes.Add("path-field");
@@ -77,6 +79,7 @@ internal static class Dialogs
         buttons.Children.Add(ok); buttons.Children.Add(cancel); body.Children.Add(buttons);
         window.KeyDown += (_, e) => { if (e.Key == Key.Escape) { e.Handled = true; window.Close(null); } };
         window.Opened += (_, _) => { input.Focus(); input.SelectAll(); };
+        using var cancellation = cancellationToken.Register(() => Avalonia.Threading.Dispatcher.UIThread.Post(() => window.Close()));
         return await window.ShowDialog<string?>(owner);
     }
 
@@ -94,8 +97,9 @@ internal static class Dialogs
         return await window.ShowDialog<bool>(owner);
     }
 
-    public static async Task<ConflictResolution> ConflictAsync(Window owner, FileConflict conflict)
+    public static async Task<ConflictResolution> ConflictAsync(Window owner, FileConflict conflict, CancellationToken cancellationToken = default)
     {
+        cancellationToken.ThrowIfCancellationRequested();
         var bothDirectories = conflict.Source.IsDirectory && conflict.Destination.IsDirectory;
         var (window, body, buttons) = Create(owner, "Destination exists",
             $"Destination:\n{conflict.Destination.FullPath}\n\n" +
@@ -115,10 +119,13 @@ internal static class Dialogs
         primary.Classes.Add("primary");
         window.KeyDown += (_, e) => { if (e.Key == Key.Escape) { e.Handled = true; window.Close(); } };
         window.Opened += (_, _) => primary.Focus();
+        using var cancellation = cancellationToken.Register(() => Avalonia.Threading.Dispatcher.UIThread.Post(() => window.Close()));
         await window.ShowDialog(owner);
+        cancellationToken.ThrowIfCancellationRequested();
         if (result.Action == ConflictAction.Rename)
         {
-            var name = await PromptAsync(owner, "Rename incoming entry", "New name:", conflict.Source.Name);
+            var name = await PromptAsync(owner, "Rename incoming entry", "New name:", conflict.Source.Name, cancellationToken: cancellationToken);
+            cancellationToken.ThrowIfCancellationRequested();
             return name is null ? new(ConflictAction.Cancel) : new(ConflictAction.Rename, name);
         }
         return result;

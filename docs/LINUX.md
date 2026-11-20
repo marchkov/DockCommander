@@ -74,8 +74,10 @@ The graphical application also passed a five-second startup smoke check under WS
 Debian and a native desktop session still
 need manual validation of window decoration, hotkey conflicts, and native drag/drop.
 
-`sh packaging/linux/install.sh` checks for the .NET 10 runtime, then installs the published folder
-to `~/.local/share/dockcommander` and adds `~/.local/bin/dc`. The command checks the runtime again
-before starting `DC`. `packaging/linux/build-deb.sh` packs a `.deb` that depends on
-`dotnet-runtime-10.0`, `libx11-6`, `libice6`, `libsm6`, `libfontconfig1`, `libglib2.0-bin`, and
-`xdg-utils`. Neither installer downloads or bundles .NET.
+`sh packaging/linux/install.sh` checks for Microsoft.NETCore.App 10 on x64, then installs the published
+folder to `~/.local/share/dockcommander`, adds `~/.local/bin/dc`, and creates an application-menu
+entry with `icon.png`. The command checks the same framework again before starting `DC`.
+`sh packaging/linux/uninstall.sh` removes only that recorded installation.
+`packaging/linux/build-deb.sh` packs a `.deb` that depends on `dotnet-runtime-10.0`, `libx11-6`,
+`libice6`, `libsm6`, `libfontconfig1`, `libglib2.0-bin`, and `xdg-utils`, and installs
+`/usr/share/applications/dockcommander.desktop`. Neither installer downloads or bundles .NET.
