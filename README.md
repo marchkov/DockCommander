@@ -71,6 +71,11 @@ native libraries, and installs the same menu entry for all users.
 - Vector folder/file/action icons, coordinated panel colors, and distinct active/inactive selection.
 - Compact Name / Type / Size / Modified columns; directories before files.
 - Restrained active-pane border, local timestamps, preserved cursor and marks on refresh.
+- Each pane has its own `Local | Remote` switch. Remote profiles can open SFTP, FTP, or FTPS
+  in either pane; WebDAV profiles are visible but not connected yet. An open remote session can be
+  shared by both panes and is kept alive when a pane temporarily switches back to Local.
+- Cross-provider copy and move use the same transfer queue, progress, cancellation, and conflicts
+  as local operations. Local ↔ Remote and Remote ↔ Remote are supported.
 - Local recursive copy and move through an operation service, outside the UI thread.
   Confirmed copies and moves enter a queue. One runs at a time; further copies and moves can be
   queued while the panes stay usable. Waiting items can be removed. Esc cancels the running transfer.
@@ -182,6 +187,10 @@ On Windows this is normally `%APPDATA%\DockCommander\settings.json`.
 Invalid settings fall back to defaults; unavailable saved paths fall back to the home directory.
 The optional `Theme` setting is `Light` or `Dark`; existing settings without it use the light theme.
 `EditorExecutable` stores the optional external editor, saved on close.
+Saved remote profiles live in `connections.json`. Remembered sign-in data is stored separately
+in `connections.secrets.json` and encrypted for the current user: Windows uses DPAPI CurrentUser;
+Linux uses an application key restricted to the user account. Server trust is stored per connection
+and must be confirmed again when the SFTP host key or FTPS certificate fingerprint changes.
 Dialogs follow the main window's theme. Theme colors and styles live in
 `src/DockCommander.App/Styles.axaml`.
 
@@ -208,8 +217,11 @@ Dialogs follow the main window's theme. Theme colors and styles live in
 - Copies are staged beside the destination before replacing an existing file.
   A process crash may leave a clearly named `.dc-*.tmp` file.
 - One transfer runs at a time. More copies and moves wait in the queue. Delete, rename, and new folder
-  are refused while that queue is not empty. Cross-provider transfers are deferred.
-- External opening and editing require a provider to expose an existing local file.
+  are refused while that queue is not empty.
+- Cross-provider transfers stream through provider capabilities. A move across providers copies first,
+  then deletes the source; a failure after the copy can therefore leave both copies.
+- External opening and editing require a provider to expose an existing local file. F3 can preview
+  supported remote text files directly through the provider stream.
 
 ## Tests
 
@@ -238,7 +250,9 @@ See the [current roadmap and audit](docs/ROADMAP.md) for completed work and rema
 - [Provider lifecycle and guarantees](docs/PLUGIN_API.md).
 
 Supported systems are Windows and Debian/Ubuntu. Copy and move are queued, and the installers
-check for the .NET 10 x64 runtime. Dynamic plugin loading and remote or archive providers come later.
+check for the .NET 10 x64 runtime. SFTP, FTP, and FTPS are implemented through the same provider
+and transfer model as local files. The next remote provider is WebDAV; dynamic external plugin
+loading and archive providers remain later work.
 
 The active solution is `DockCommander.slnx` in the repository root.
 
