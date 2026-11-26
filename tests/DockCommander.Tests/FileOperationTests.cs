@@ -489,8 +489,9 @@ public sealed class FileOperationTests
         var locked = temp.File("dir/m.txt", "stay");
         using var stream = new FileStream(locked, FileMode.Open, FileAccess.ReadWrite, FileShare.None);
         var directory = (await _provider.GetEntryAsync(Path.GetDirectoryName(first)!))!;
-        var error = await Assert.ThrowsAsync<IOException>(() => _service.DeleteAsync(_provider, [directory], DeleteMode.Permanent));
+        var error = await Assert.ThrowsAsync<PartialDeletionException>(() => _service.DeleteAsync(_provider, [directory], DeleteMode.Permanent));
         Assert.Contains("Already deleted:", error.Message);
+        Assert.Contains(first, error.Deleted);
         Assert.Contains(first, error.Message);
         Assert.False(File.Exists(first));
         Assert.True(File.Exists(locked));
@@ -512,9 +513,10 @@ public sealed class FileOperationTests
     public async Task DeleteReportsEntriesRemovedBeforeALaterFailure()
     {
         var provider = new ScriptedDeleteProvider();
-        var error = await Assert.ThrowsAsync<IOException>(() => _service.DeleteAsync(provider,
+        var error = await Assert.ThrowsAsync<PartialDeletionException>(() => _service.DeleteAsync(provider,
             [new FileEntry("ok", "ok", false, null, null), new FileEntry("locked", "locked", false, null, null)], DeleteMode.Permanent));
         Assert.Contains("Already deleted: ok", error.Message);
+        Assert.Equal("ok", Assert.Single(error.Deleted));
         Assert.Equal("ok", Assert.Single(provider.Deleted));
     }
 
@@ -527,6 +529,83 @@ public sealed class FileOperationTests
         Assert.True(sink.RefusedPermanentDelete);
         var allowed = new WindowsTrashService.RecycleProgressSink(CancellationToken.None);
         Assert.Equal(0, allowed.PreDeleteItem(0x80, IntPtr.Zero));
+    }
+
+    [Fact]
+    public async Task ADeepDirectoryTreeCopiesWithoutRecursiveCalls()
+    {
+        const int depth = 8000;
+        var source = new ChainFiles("src", depth);
+        var destination = new ChainFiles("dst", 0);
+        var result = await _service.TransferAsync(source, destination, [source.Root], "dst:", false,
+            _ => Task.FromResult(new ConflictResolution(ConflictAction.Overwrite)));
+        Assert.Equal(1, result.Completed);
+        Assert.Equal(0, result.Skipped);
+        Assert.Equal(depth, destination.Directories.Count);
+        var leaf = "dst:/0";
+        for (var level = 1; level < depth; level++) leaf += "/" + level;
+        Assert.Equal("end", destination.Files[leaf + "/leaf.txt"]);
+    }
+
+    private sealed class ChainFiles(string scheme, int depth) : IFileSystemProvider
+    {
+        public Dictionary<string, string> Files { get; } = new(StringComparer.Ordinal);
+        public HashSet<string> Directories { get; } = new(StringComparer.Ordinal);
+        public FileEntry Root => new("0", scheme + ":/0", true, null, null);
+        public string Id => scheme;
+        public string DisplayName => scheme;
+        public bool SupportsRecycle => false;
+        public bool CanWriteFileContent => true;
+        public StringComparer PathComparer => StringComparer.Ordinal;
+        public bool CanHandle(string path) => path.StartsWith(scheme + ":", StringComparison.Ordinal);
+        public string NormalizePath(string path) => path;
+        public string CombinePath(string directory, string name) => directory.TrimEnd('/') + "/" + name;
+        public bool IsSameOrDescendant(string path, string ancestor) => false;
+        public Task<IReadOnlyList<LocationEntry>> GetLocationsAsync(CancellationToken cancellationToken = default) =>
+            Task.FromResult<IReadOnlyList<LocationEntry>>([]);
+        public Task<IReadOnlyList<FileEntry>> ListAsync(string path, CancellationToken cancellationToken = default)
+        {
+            var level = Level(path);
+            if (level < 0 || level >= depth) return Task.FromResult<IReadOnlyList<FileEntry>>([]);
+            if (level == depth - 1)
+                return Task.FromResult<IReadOnlyList<FileEntry>>([new("leaf.txt", path + "/leaf.txt", false, 3, null)]);
+            var next = level + 1;
+            return Task.FromResult<IReadOnlyList<FileEntry>>([new(next.ToString(), path + "/" + next, true, null, null)]);
+        }
+        public Task<FileEntry?> GetEntryAsync(string path, CancellationToken cancellationToken = default)
+        {
+            if (Files.ContainsKey(path)) return Task.FromResult<FileEntry?>(new(NameOf(path), path, false, 3, null));
+            if (Directories.Contains(path)) return Task.FromResult<FileEntry?>(new(NameOf(path), path, true, null, null));
+            return Task.FromResult<FileEntry?>(null);
+        }
+        public Task CreateDirectoryAsync(string path, CancellationToken cancellationToken = default)
+        {
+            Directories.Add(path);
+            return Task.CompletedTask;
+        }
+        public Task DeleteAsync(string path, DeleteMode mode, CancellationToken cancellationToken = default) => throw new NotSupportedException();
+        public Task RemoveEmptyDirectoryAsync(string path, CancellationToken cancellationToken = default) => throw new NotSupportedException();
+        public Task CopyFileAsync(string sourcePath, string destinationPath, bool overwrite, CancellationToken cancellationToken = default) => throw new NotSupportedException();
+        public Task MoveFileAsync(string sourcePath, string destinationPath, bool overwrite, CancellationToken cancellationToken = default) => throw new NotSupportedException();
+        public Task<Stream> OpenReadAsync(string path, CancellationToken cancellationToken = default) =>
+            Task.FromResult<Stream>(new MemoryStream("end"u8.ToArray()));
+        public Task WriteFileAsync(string destinationPath, Stream content, bool overwrite, IProgress<long>? bytesCopied, CancellationToken cancellationToken = default)
+        {
+            using var copy = new MemoryStream();
+            content.CopyTo(copy);
+            Files[destinationPath] = System.Text.Encoding.UTF8.GetString(copy.ToArray());
+            return Task.CompletedTask;
+        }
+        private static int Level(string path)
+        {
+            var slash = path.LastIndexOf('/');
+            return slash < 0 || !int.TryParse(path[(slash + 1)..], out var level) ? -1 : level;
+        }
+        private static string NameOf(string path)
+        {
+            var slash = path.LastIndexOf('/');
+            return slash < 0 ? path : path[(slash + 1)..];
+        }
     }
 
     private sealed class ScriptedDeleteProvider : IFileSystemProvider

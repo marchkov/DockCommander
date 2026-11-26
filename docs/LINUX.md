@@ -38,7 +38,7 @@ Alt+F1/F2 can be intercepted by the desktop environment; drive buttons remain av
 Each pane offers compact location shortcuts: «Домой», «Корень», and user-facing mounted
 volumes. WSL `/mnt/c`, `/mnt/d`, etc. appear as `C:`, `D:`, etc. Other volumes use their
 label or mount directory name. Hover to see the full path. System mounts are omitted.
-Buttons that do not fit move into «Ещё ▾» and return when the window grows; no horizontal
+Buttons that do not fit move into «More ▾» and return when the window grows; no horizontal
 scrollbar is needed. Alt+F1/F2 shows the same filtered locations with full paths.
 
 ## Trash

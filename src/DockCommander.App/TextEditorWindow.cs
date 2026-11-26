@@ -120,7 +120,7 @@ internal sealed class TextEditorWindow : Window
             SetMessage($"Save uses {choice.Name}.");
         };
         var reload = new Button { Name = "ReloadButton", Content = "Reload", MinWidth = 72 };
-        reload.Click += (_, _) => Reload();
+        reload.Click += async (_, _) => await ReloadAsync();
         _lineEnding = new Button { Name = "LineEndingButton", Content = TextDocuments.NewLineLabel(_newLine), MinWidth = 64 };
         _lineEnding.Click += (_, _) =>
         {
@@ -231,7 +231,7 @@ internal sealed class TextEditorWindow : Window
         }
     }
 
-    private void Reload()
+    private async Task ReloadAsync()
     {
         if (IsDirty)
         {
@@ -240,7 +240,9 @@ internal sealed class TextEditorWindow : Window
         }
         try
         {
-            var document = TextDocuments.Decode(_bytes, encodingId: _encodingId);
+            var document = await TextDocuments.ReadAsync(_provider, _entry.FullPath, TextDocuments.MaxEditBytes, false, CancellationToken.None);
+            document = TextDocuments.Decode(document.Bytes, encodingId: _encodingId);
+            _bytes = document.Bytes;
             _text.Text = document.Text;
             _savedText = _text.Text ?? "";
             _newLine = _savedNewLine = document.NewLine;

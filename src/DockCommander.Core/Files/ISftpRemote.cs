@@ -13,4 +13,9 @@ public interface ISftpRemote : IDisposable
     void DeleteFile(string path, CancellationToken cancellationToken);
     void DeleteDirectory(string path, CancellationToken cancellationToken);
     void Rename(string sourcePath, string destinationPath, CancellationToken cancellationToken);
+
+    // Replaces destination with the staged file in one operation. False means this protocol
+    // cannot replace an existing file by rename, so the caller deletes it first.
+    // A thrown exception means the replacement was attempted and the destination is unchanged.
+    bool TryReplaceFile(string temporaryPath, string destinationPath, CancellationToken cancellationToken) => false;
 }

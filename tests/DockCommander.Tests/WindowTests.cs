@@ -1866,6 +1866,41 @@ public sealed class WindowTests
     }
 
     [AvaloniaFact]
+    public async Task ReloadRereadsTheProviderAndKeepsDirtyOrFailedText()
+    {
+        var remote = new MemorySftp();
+        remote.AddDirectory("/");
+        remote.AddFile("/notes.txt", "hello");
+        using var provider = new SftpFileSystemProvider(remote, "box", "Box", "/");
+        var owner = new Window { Width = 800, Height = 600 };
+        owner.Show();
+        try
+        {
+            var path = provider.NormalizePath("/notes.txt");
+            var document = await TextDocuments.ReadAsync(provider, path, TextDocuments.MaxEditBytes, false);
+            var editor = new TextEditorWindow(owner, (await provider.GetEntryAsync(path))!, provider, document);
+            editor.Show();
+            Dispatcher.UIThread.RunJobs();
+            var text = editor.GetVisualDescendants().OfType<TextBox>().Single(box => box.Name == "EditorText");
+            remote.AddFile("/notes.txt", "changed");
+            Click(editor, "Reload");
+            await WaitUntil(() => text.Text == "changed");
+            Assert.False(editor.IsDirty);
+            remote.FailRead = true;
+            Click(editor, "Reload");
+            await WaitUntil(() => editor.GetVisualDescendants().OfType<TextBlock>().Any(block => block.Text == "The file could not be read."));
+            Assert.Equal("changed", text.Text);
+            text.Text += "!";
+            Click(editor, "Reload");
+            Assert.Equal("changed!", text.Text);
+            Assert.Contains(editor.GetVisualDescendants().OfType<TextBlock>(), block => block.Text?.Contains("discard") == true);
+            text.Text = "changed";
+            editor.Close();
+        }
+        finally { owner.Close(); }
+    }
+
+    [AvaloniaFact]
     public async Task SecondCopyWaitsAndDeleteCanBeConfirmedWhileItRuns()
     {
         using var temp = new ScratchDirectory();
@@ -1903,6 +1938,63 @@ public sealed class WindowTests
             Assert.Equal(1, provider.Transfers);
         }
         finally { provider.Release(); await Close(window); }
+    }
+
+    [AvaloniaFact]
+    public async Task FindFilesNavigatesToTheResultAndLeavesEditorSearchAlone()
+    {
+        using var temp = new ScratchDirectory();
+        var nested = temp.File("left/sub/b.txt", "abcd");
+        var (window, left, _, _) = await Open(temp);
+        try
+        {
+            left.FocusList();
+            Press(window, Key.F7, RawInputModifiers.Alt);
+            await WaitUntil(() => window.OwnedWindows.Any(dialog => dialog.Title == "Find files"));
+            var opened = window.OwnedWindows.Single();
+            Assert.Equal(left.CurrentDisplayPath, opened.GetVisualDescendants().OfType<TextBox>().Single(box => box.Name == "FindStart").Text);
+            Press(opened, Key.Escape);
+            await WaitUntil(() => !window.OwnedWindows.Any());
+            Press(window, Key.F, RawInputModifiers.Control);
+            await WaitUntil(() => window.OwnedWindows.Any(dialog => dialog.Title == "Find files"));
+            var dialog = window.OwnedWindows.Single();
+            dialog.GetVisualDescendants().OfType<TextBox>().Single(box => box.Name == "FindPattern").Text = "b.txt";
+            Click(dialog, "Search");
+            var list = dialog.GetVisualDescendants().OfType<ListBox>().Single(box => box.Name == "FindResults");
+            await WaitUntil(() => list.Items.OfType<FindFilesWindow.SearchRow>().Any(row => row.Name == "b.txt"));
+            Assert.Contains(dialog.GetVisualDescendants().OfType<TextBlock>(), block => block.Name == "FindStatus" && block.Text == "1 result");
+            list.SelectedItem = list.Items.OfType<FindFilesWindow.SearchRow>().Single(row => row.Name == "b.txt");
+            list.RaiseEvent(new TappedEventArgs(InputElement.DoubleTappedEvent, null!));
+            await WaitUntil(() => !window.OwnedWindows.Any() && left.CurrentEntry?.Name == "b.txt");
+            Assert.True(left.Provider.PathComparer.Equals(left.Provider.NormalizePath(Path.GetDirectoryName(nested)!), left.CurrentPath));
+        }
+        finally { await Close(window); }
+    }
+
+    [AvaloniaFact]
+    public async Task SpaceCalculatesAFolderSizeAndCtrlSpaceStillMarks()
+    {
+        using var temp = new ScratchDirectory();
+        var folder = temp.Folder("left/docs");
+        temp.File("left/docs/a.txt", "abcd");
+        var notes = temp.File("left/notes.txt", "source");
+        var (window, left, _, _) = await Open(temp);
+        try
+        {
+            await left.NavigateAsync(left.CurrentPath, folder);
+            left.FocusList();
+            Press(window, Key.Space);
+            await WaitUntil(() => left.GetVisualDescendants().OfType<TextBlock>().Any(block => block.Text == "4 B"));
+            await left.NavigateAsync(left.CurrentPath, notes);
+            left.FocusList();
+            Press(window, Key.Space);
+            Dispatcher.UIThread.RunJobs();
+            Assert.Contains(left.GetVisualDescendants().OfType<TextBlock>(), block => block.Text == "6 B");
+            Assert.DoesNotContain(left.GetVisualDescendants().OfType<TextBlock>(), block => block.Text == "Calculating…");
+            Press(window, Key.Space, RawInputModifiers.Control);
+            await WaitUntil(() => left.GetVisualDescendants().OfType<TextBlock>().Any(block => block.Text == "●"));
+        }
+        finally { await Close(window); }
     }
 
     private sealed class GatedTransferProvider(IFileSystemProvider inner) : IFileSystemProvider

@@ -91,6 +91,28 @@ public sealed class SftpProviderTests
         Assert.Equal(FtpEncryptionMode.Explicit, FluentFtpRemote.Encryption(ConnectionProtocols.Ftps, 21));
         Assert.Equal(FtpEncryptionMode.Implicit, FluentFtpRemote.Encryption(ConnectionProtocols.Ftps, 990));
     }
+
+    [Fact]
+    public async Task FailedUploadKeepsTheFileAndAFailedRenameLeavesNoTemporaryFile()
+    {
+        var remote = new MemorySftp();
+        remote.AddDirectory("/");
+        remote.AddFile("/keep.txt", "old");
+        using var provider = new SftpFileSystemProvider(remote, "box", "Box", "/");
+        var path = provider.NormalizePath("/keep.txt");
+        remote.FailWrite = true;
+        await using (var content = new MemoryStream("new"u8.ToArray()))
+            await Assert.ThrowsAsync<IOException>(() => provider.WriteFileAsync(path, content, true, null));
+        Assert.Equal("old", remote.ReadFile("/keep.txt"));
+        Assert.DoesNotContain(await provider.ListAsync("/"), entry => entry.Name.StartsWith(".dc-", StringComparison.Ordinal));
+
+        remote.FailWrite = false;
+        remote.FailRename = true;
+        await using (var content = new MemoryStream("new"u8.ToArray()))
+            await Assert.ThrowsAsync<IOException>(() => provider.WriteFileAsync(path, content, true, null));
+        Assert.Null(await provider.GetEntryAsync(path));
+        Assert.DoesNotContain(await provider.ListAsync("/"), entry => entry.Name.StartsWith(".dc-", StringComparison.Ordinal));
+    }
 }
 
 internal sealed class MemorySftp : ISftpRemote
@@ -110,6 +132,9 @@ internal sealed class MemorySftp : ISftpRemote
     public string ReadFile(string path) => System.Text.Encoding.UTF8.GetString(_nodes[Clean(path)].Content!);
 
     public bool FailClosed { get; set; }
+    public bool FailWrite { get; set; }
+    public bool FailRename { get; set; }
+    public bool FailRead { get; set; }
 
     public IReadOnlyList<SftpRemoteEntry> List(string path, CancellationToken cancellationToken)
     {
@@ -133,6 +158,7 @@ internal sealed class MemorySftp : ISftpRemote
 
     public Stream OpenRead(string path, CancellationToken cancellationToken)
     {
+        if (FailRead) throw new IOException("The file could not be read.");
         path = Clean(path);
         if (!_nodes.TryGetValue(path, out var node) || node.Directory) throw new IOException("Select a regular file.");
         return new MemoryStream(node.Content ?? [], writable: false);
@@ -140,6 +166,7 @@ internal sealed class MemorySftp : ISftpRemote
 
     public Stream OpenWrite(string path, CancellationToken cancellationToken)
     {
+        if (FailWrite) throw new IOException("The upload failed.");
         path = Clean(path);
         var memory = new MemoryStream();
         return new CommitStream(memory, () => _nodes[path] = new Node(false, memory.ToArray()));
@@ -168,6 +195,7 @@ internal sealed class MemorySftp : ISftpRemote
 
     public void Rename(string sourcePath, string destinationPath, CancellationToken cancellationToken)
     {
+        if (FailRename) throw new IOException("The rename failed.");
         var source = Clean(sourcePath);
         var destination = Clean(destinationPath);
         if (!_nodes.ContainsKey(source)) throw new IOException("The item is no longer there.");

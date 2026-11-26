@@ -59,12 +59,39 @@ public sealed class WebDavTests
             _ => Task.FromResult(new ConflictResolution(ConflictAction.Overwrite)));
         Assert.Equal("next", server.Read("/dav/out.txt"));
         await pane.CreateDirectoryAsync("/dav/my folder");
+        var folder = Assert.Single(await pane.ListAsync("/dav"), entry => entry.Name == "my folder");
+        Assert.True(folder.IsDirectory);
         var renamed = await pane.RenameAsync("/dav/notes.txt", "renamed notes.txt");
         Assert.Equal("/dav/renamed notes.txt", pane.DisplayPath(renamed));
         await pane.DeleteAsync("/dav/my folder", DeleteMode.Permanent);
         Assert.Null(await pane.GetEntryAsync("/dav/my folder"));
         using var other = new SftpFileSystemProvider(new MemorySftp(), "other", "SFTP", "/");
         Assert.False(pane.CanHandle(other.NormalizePath("/dav")));
+    }
+
+    [Fact]
+    public async Task WebDavReplacesAFileWithoutDeletingItFirst()
+    {
+        using var server = new MemoryDav();
+        server.AddDirectory("/dav");
+        server.AddFile("/dav/keep.txt", "old");
+        using var remote = new WebDavRemote(server, new Uri("https://cloud.example.com:443/"), "denis", "secret");
+        var pane = new SftpFileSystemProvider(remote, "cloud", "Cloud", "/dav", "webdav");
+        var path = pane.NormalizePath("/dav/keep.txt");
+        await using (var content = new MemoryStream("new"u8.ToArray()))
+            await pane.WriteFileAsync(path, content, true, null);
+        Assert.Equal("new", server.Read("/dav/keep.txt"));
+        Assert.Contains("MOVE", server.Methods);
+        Assert.DoesNotContain("DELETE", server.Methods);
+
+        server.Methods.Clear();
+        server.AddFile("/dav/keep.txt", "old");
+        server.FailMove = true;
+        await using (var content = new MemoryStream("newer"u8.ToArray()))
+            await Assert.ThrowsAsync<IOException>(() => pane.WriteFileAsync(path, content, true, null));
+        Assert.Equal("old", server.Read("/dav/keep.txt"));
+        Assert.Contains("DELETE", server.Methods);
+        Assert.DoesNotContain(await pane.ListAsync("/dav"), entry => entry.Name.StartsWith(".dc-", StringComparison.Ordinal));
     }
 
     [Fact]
@@ -178,6 +205,8 @@ public sealed class WebDavTests
 
     private sealed class MemoryDav : HttpMessageHandler, IDisposable
     {
+        public bool FailMove { get; set; }
+        public List<string> Methods { get; } = [];
         private readonly Dictionary<string, byte[]?> _nodes = new(StringComparer.Ordinal) { ["/"] = null };
 
         public void AddDirectory(string path) => _nodes[Clean(path)] = null;
@@ -190,6 +219,7 @@ public sealed class WebDavTests
         {
             var path = Clean(Uri.UnescapeDataString(request.RequestUri!.AbsolutePath));
             var method = request.Method.Method;
+            Methods.Add(method);
             if (method == "PROPFIND") return Propfind(path, request.Headers.GetValues("Depth").First() != "0");
             if (method == "GET")
             {
@@ -216,6 +246,7 @@ public sealed class WebDavTests
             }
             if (method == "MOVE")
             {
+                if (FailMove) return new HttpResponseMessage(HttpStatusCode.InternalServerError);
                 var destination = Clean(Uri.UnescapeDataString(new Uri(request.Headers.GetValues("Destination").First()).AbsolutePath));
                 if (!_nodes.TryGetValue(path, out var content)) return new HttpResponseMessage(HttpStatusCode.NotFound);
                 _nodes.Remove(path);

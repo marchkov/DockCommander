@@ -223,6 +223,11 @@ public sealed class SftpFileSystemProvider : IFileSystemProvider, IDisposable
             {
                 if (!overwrite) throw new IOException("An entry with this name already exists.");
                 if (existing.IsDirectory && !existing.IsLink) throw new IOException("A file cannot replace a folder.");
+                if (_remote.TryReplaceFile(temp, destination, cancellationToken))
+                {
+                    committed = true;
+                    return;
+                }
                 _remote.DeleteFile(destination, cancellationToken);
             }
             _remote.Rename(temp, destination, cancellationToken);

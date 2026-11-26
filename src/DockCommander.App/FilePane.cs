@@ -29,6 +29,12 @@ internal sealed class FileRow(FileEntry entry) : INotifyPropertyChanged
         set { _marked = value; PropertyChanged?.Invoke(this, new(nameof(Marker))); }
     }
     public string Marker => Marked ? "●" : "";
+    private string? _sizeOverride;
+    public string? SizeOverride
+    {
+        set { _sizeOverride = value; PropertyChanged?.Invoke(this, new(nameof(SizeText))); }
+    }
+    public string SizeText => _sizeOverride ?? (Entry.Size is long size ? FilePane.FormatSize(size) : "");
     public event PropertyChangedEventHandler? PropertyChanged;
 }
 
@@ -51,7 +57,7 @@ internal sealed class FilePane : UserControl
     private readonly TextBox _path = new() { Margin = new Thickness(0, 8, 0, 0) };
     private readonly StackPanel _locations = new() { Orientation = Orientation.Horizontal, Spacing = 3 };
     private readonly Grid _locationHost = new() { ColumnDefinitions = new ColumnDefinitions("*,Auto") };
-    private readonly Button _moreLocations = new() { Name = "MoreLocations", Content = "Ещё ▾", IsVisible = false,
+    private readonly Button _moreLocations = new() { Name = "MoreLocations", Content = "More ▾", IsVisible = false,
         Width = 76, Padding = new Thickness(7, 4), MinHeight = 28 };
     private readonly Border _frame;
     private readonly Grid _local;
@@ -129,8 +135,9 @@ internal sealed class FilePane : UserControl
             if (row is null) return new TextBlock();
             var entry = row.Entry;
             var cells = Row("", entry.Name, entry.IsLink ? "Link" : entry.Name == ".." ? "Parent" : entry.IsDirectory ? "Folder" : entry.Extension?.TrimStart('.') ?? "",
-                entry.Size is long size ? FormatSize(size) : "", entry.Modified?.ToLocalTime().ToString("yyyy-MM-dd HH:mm") ?? "", false);
+                "", entry.Modified?.ToLocalTime().ToString("yyyy-MM-dd HH:mm") ?? "", false);
             ((TextBlock)cells.Children[0]).Bind(TextBlock.TextProperty, new Binding(nameof(FileRow.Marker)));
+            ((TextBlock)cells.Children[3]).Bind(TextBlock.TextProperty, new Binding(nameof(FileRow.SizeText)));
             var icon = UiIcons.Create(entry.Name == ".." ? "up" : entry.IsDirectory ? "folder" : "file", entry.IsDirectory && entry.Name != ".." ? "folder" : null);
             Grid.SetColumn(icon, 1); cells.Children.Add(icon);
             cells.DataContext = row;
@@ -277,7 +284,13 @@ internal sealed class FilePane : UserControl
         return grid;
     }
 
-    private static string FormatSize(long bytes)
+    public void ShowCalculatedSize(string fullPath, string? text)
+    {
+        var row = _rows.FirstOrDefault(item => Provider.PathComparer.Equals(item.Entry.FullPath, fullPath));
+        if (row is not null) row.SizeOverride = text;
+    }
+
+    internal static string FormatSize(long bytes)
     {
         string[] units = ["B", "KB", "MB", "GB", "TB"];
         double value = bytes; var unit = 0;
@@ -700,9 +713,6 @@ internal sealed class FilePane : UserControl
             IStorageItem? item = entry.IsDirectory
                 ? await storage.TryGetFolderFromPathAsync(entry.FullPath)
                 : await storage.TryGetFileFromPathAsync(entry.FullPath);
-            item ??= entry.IsDirectory
-                ? await storage.TryGetFileFromPathAsync(entry.FullPath)
-                : await storage.TryGetFolderFromPathAsync(entry.FullPath);
             if (item is not null) data.Add(DataTransferItem.Create(DataFormat.File, item));
         }
     }

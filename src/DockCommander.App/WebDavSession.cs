@@ -206,18 +206,13 @@ internal sealed class WebDavRemote : ISftpRemote
 
     public void DeleteDirectory(string path, CancellationToken cancellationToken) => Delete(path, cancellationToken);
 
-    public void Rename(string sourcePath, string destinationPath, CancellationToken cancellationToken)
+    public void Rename(string sourcePath, string destinationPath, CancellationToken cancellationToken) =>
+        Move(sourcePath, destinationPath, overwrite: false, cancellationToken);
+
+    public bool TryReplaceFile(string temporaryPath, string destinationPath, CancellationToken cancellationToken)
     {
-        var destination = Resource(destinationPath);
-        using var response = Send(new HttpMethod("MOVE"), sourcePath, null, cancellationToken, new Dictionary<string, string>
-        {
-            ["Destination"] = destination.AbsoluteUri,
-            ["Overwrite"] = "F"
-        });
-        if (response.StatusCode is HttpStatusCode.PreconditionFailed or HttpStatusCode.Forbidden)
-            throw new IOException("An entry with this name already exists.");
-        if (response.StatusCode == HttpStatusCode.NotFound) throw new FileNotFoundException("The item is no longer there.");
-        EnsureSuccess(response);
+        Move(temporaryPath, destinationPath, overwrite: true, cancellationToken);
+        return true;
     }
 
     public void Dispose()
@@ -236,6 +231,20 @@ internal sealed class WebDavRemote : ISftpRemote
                 : "The server redirected this address. Use HTTPS, or put the WebDAV collection in Initial path.");
         if (code >= 500) throw new IOException($"The server returned {code} {response.ReasonPhrase}.");
         return code;
+    }
+
+    private void Move(string sourcePath, string destinationPath, bool overwrite, CancellationToken cancellationToken)
+    {
+        var destination = Resource(destinationPath);
+        using var response = Send(new HttpMethod("MOVE"), sourcePath, null, cancellationToken, new Dictionary<string, string>
+        {
+            ["Destination"] = destination.AbsoluteUri,
+            ["Overwrite"] = overwrite ? "T" : "F"
+        });
+        if (!overwrite && response.StatusCode is HttpStatusCode.PreconditionFailed or HttpStatusCode.Forbidden)
+            throw new IOException("An entry with this name already exists.");
+        if (response.StatusCode == HttpStatusCode.NotFound) throw new FileNotFoundException("The item is no longer there.");
+        EnsureSuccess(response);
     }
 
     private void Delete(string path, CancellationToken cancellationToken)
@@ -421,7 +430,13 @@ internal sealed class WebDavRemote : ISftpRemote
     private static string HrefPath(string href, out bool trailingCollection)
     {
         var text = href.Trim();
-        if (Uri.TryCreate(text, UriKind.Absolute, out var absolute)) text = absolute.AbsolutePath;
+        // A WebDAV href is often a scheme-less path. On Unix, Uri.TryCreate treats a
+        // leading slash as a file URI and re-encodes percent escapes, so "my%20folder"
+        // no longer matches the folder that was created.
+        if ((text.StartsWith("https://", StringComparison.OrdinalIgnoreCase) || text.StartsWith("http://", StringComparison.OrdinalIgnoreCase))
+            && Uri.TryCreate(text, UriKind.Absolute, out var absolute)
+            && absolute.Scheme is "http" or "https")
+            text = absolute.AbsolutePath;
         text = Uri.UnescapeDataString(text);
         if (!text.StartsWith('/')) text = "/" + text;
         trailingCollection = text.Length > 1 && text.EndsWith('/');

@@ -202,11 +202,13 @@ public sealed class TransferQueue : IAsyncDisposable
                 new InlineProgress<BatchTransferProgress>(value => BatchProgress = value));
             return $"{work.Request.Label}: completed {result.Completed}, skipped {result.Skipped}.";
         }
-        catch (OperationCanceledException ex)
+        catch (PartialDeletionException ex) when (ex.InnerException is OperationCanceledException)
         {
-            return ex.Message.Contains("Already deleted:", StringComparison.Ordinal)
-                ? ex.Message
-                : $"{work.Request.Label}: cancelled. Already completed changes are kept.";
+            return ex.Message;
+        }
+        catch (OperationCanceledException)
+        {
+            return $"{work.Request.Label}: cancelled. Already completed changes are kept.";
         }
         catch (Exception ex)
         {

@@ -3,34 +3,34 @@
     <ResourceDictionary>
       <ResourceDictionary.ThemeDictionaries>
         <ResourceDictionary x:Key="Light">
-          <SolidColorBrush x:Key="CanvasBrush">#EEF1F6</SolidColorBrush>
+          <SolidColorBrush x:Key="CanvasBrush">#F3F3F3</SolidColorBrush>
           <SolidColorBrush x:Key="SurfaceBrush">#FFFFFF</SolidColorBrush>
-          <SolidColorBrush x:Key="InsetBrush">#F6F8FB</SolidColorBrush>
-          <SolidColorBrush x:Key="LineBrush">#DDE3ED</SolidColorBrush>
-          <SolidColorBrush x:Key="TextBrush">#202B3D</SolidColorBrush>
-          <SolidColorBrush x:Key="MutedBrush">#65738A</SolidColorBrush>
-          <SolidColorBrush x:Key="AccentBrush">#3566CE</SolidColorBrush>
-          <SolidColorBrush x:Key="AccentSoftBrush">#EAF0FF</SolidColorBrush>
-          <SolidColorBrush x:Key="SelectionBrush">#DFEAFE</SolidColorBrush>
-          <SolidColorBrush x:Key="InactiveSelectionBrush">#EDF0F5</SolidColorBrush>
-          <SolidColorBrush x:Key="HoverBrush">#F0F4FA</SolidColorBrush>
+          <SolidColorBrush x:Key="InsetBrush">#F5F5F5</SolidColorBrush>
+          <SolidColorBrush x:Key="LineBrush">#D6D6D6</SolidColorBrush>
+          <SolidColorBrush x:Key="TextBrush">#1C1C1C</SolidColorBrush>
+          <SolidColorBrush x:Key="MutedBrush">#616161</SolidColorBrush>
+          <SolidColorBrush x:Key="AccentBrush">#0078D4</SolidColorBrush>
+          <SolidColorBrush x:Key="AccentSoftBrush">#E6F2FB</SolidColorBrush>
+          <SolidColorBrush x:Key="SelectionBrush">#D4E8F7</SolidColorBrush>
+          <SolidColorBrush x:Key="InactiveSelectionBrush">#E4E4E4</SolidColorBrush>
+          <SolidColorBrush x:Key="HoverBrush">#EFEFEF</SolidColorBrush>
           <SolidColorBrush x:Key="FolderBrush">#B98421</SolidColorBrush>
           <SolidColorBrush x:Key="FolderFillBrush">#FFF1C9</SolidColorBrush>
           <SolidColorBrush x:Key="DangerBrush">#B53B4C</SolidColorBrush>
           <SolidColorBrush x:Key="SuccessBrush">#288166</SolidColorBrush>
         </ResourceDictionary>
         <ResourceDictionary x:Key="Dark">
-          <SolidColorBrush x:Key="CanvasBrush">#131820</SolidColorBrush>
-          <SolidColorBrush x:Key="SurfaceBrush">#1C2330</SolidColorBrush>
-          <SolidColorBrush x:Key="InsetBrush">#171E29</SolidColorBrush>
-          <SolidColorBrush x:Key="LineBrush">#303B4D</SolidColorBrush>
-          <SolidColorBrush x:Key="TextBrush">#E2E8F3</SolidColorBrush>
-          <SolidColorBrush x:Key="MutedBrush">#9CAAC0</SolidColorBrush>
-          <SolidColorBrush x:Key="AccentBrush">#88B0FF</SolidColorBrush>
-          <SolidColorBrush x:Key="AccentSoftBrush">#273B5B</SolidColorBrush>
-          <SolidColorBrush x:Key="SelectionBrush">#2D466D</SolidColorBrush>
-          <SolidColorBrush x:Key="InactiveSelectionBrush">#2B3443</SolidColorBrush>
-          <SolidColorBrush x:Key="HoverBrush">#263142</SolidColorBrush>
+          <SolidColorBrush x:Key="CanvasBrush">#202020</SolidColorBrush>
+          <SolidColorBrush x:Key="SurfaceBrush">#2C2C2C</SolidColorBrush>
+          <SolidColorBrush x:Key="InsetBrush">#262626</SolidColorBrush>
+          <SolidColorBrush x:Key="LineBrush">#3F3F3F</SolidColorBrush>
+          <SolidColorBrush x:Key="TextBrush">#F3F3F3</SolidColorBrush>
+          <SolidColorBrush x:Key="MutedBrush">#B4B4B4</SolidColorBrush>
+          <SolidColorBrush x:Key="AccentBrush">#6CB3E0</SolidColorBrush>
+          <SolidColorBrush x:Key="AccentSoftBrush">#203848</SolidColorBrush>
+          <SolidColorBrush x:Key="SelectionBrush">#3A4450</SolidColorBrush>
+          <SolidColorBrush x:Key="InactiveSelectionBrush">#404040</SolidColorBrush>
+          <SolidColorBrush x:Key="HoverBrush">#353535</SolidColorBrush>
           <SolidColorBrush x:Key="FolderBrush">#E3BC70</SolidColorBrush>
           <SolidColorBrush x:Key="FolderFillBrush">#433C2D</SolidColorBrush>
           <SolidColorBrush x:Key="DangerBrush">#FF9AA8</SolidColorBrush>
@@ -134,7 +134,6 @@
     <Setter Property="Padding" Value="10,8" />
     <Setter Property="CornerRadius" Value="8,8,0,0" />
   </Style>
-  <Style Selector="Border.pane-frame.active Border.pane-top"><Setter Property="Background" Value="{DynamicResource AccentSoftBrush}" /></Style>
   <Style Selector="Border.column-header">
     <Setter Property="Background" Value="{DynamicResource InsetBrush}" />
     <Setter Property="BorderBrush" Value="{DynamicResource LineBrush}" />

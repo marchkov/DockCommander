@@ -34,7 +34,9 @@ internal sealed class SettingsStore(string? path = null)
 
     public async Task SaveAsync(AppSettings settings)
     {
-        Directory.CreateDirectory(Path.GetDirectoryName(_path)!);
+        var directory = Path.GetDirectoryName(_path);
+        if (!string.IsNullOrEmpty(directory))
+            Directory.CreateDirectory(directory);
         var temporary = _path + ".tmp";
         await File.WriteAllTextAsync(temporary, JsonSerializer.Serialize(settings, new JsonSerializerOptions { WriteIndented = true }));
         File.Move(temporary, _path, true);

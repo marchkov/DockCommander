@@ -57,6 +57,11 @@ public sealed class MainWindow : Window
     private bool _allowClose;
     private bool _saving;
     private CancellationTokenSource? _operationCancellation;
+    private CancellationTokenSource? _sizeCancellation;
+    private readonly FolderSizeGate _folderSizes = new();
+    private int _sizeGeneration;
+    private FilePane? _sizingPane;
+    private string? _sizingPath;
     private double _normalWidth = 1200;
     private double _normalHeight = 760;
 
@@ -1231,10 +1236,13 @@ public sealed class MainWindow : Window
     {
         string message;
         try { message = await operation(); }
-        catch (OperationCanceledException ex)
+        catch (PartialDeletionException ex) when (ex.InnerException is OperationCanceledException)
         {
-            message = ex.Message.Contains("Already deleted:", StringComparison.Ordinal)
-                ? ex.Message : "Cancelled. Already completed changes are kept.";
+            message = ex.Message;
+        }
+        catch (OperationCanceledException)
+        {
+            message = "Cancelled. Already completed changes are kept.";
         }
         catch (Exception ex) { message = $"Error: {ex.Message} Already completed changes are kept."; }
         foreach (var pane in new[] { _left, _right })
@@ -1282,6 +1290,59 @@ public sealed class MainWindow : Window
         SetStatus(pane.CurrentDisplayPath);
     }
 
+    private async Task FindFilesAsync()
+    {
+        if (RemoteBlocksFiles()) return;
+        var pane = _active;
+        var hit = await FindFilesWindow.ShowAsync(this, pane.Provider, pane.CurrentDisplayPath);
+        if (hit is null) return;
+        SetActive(pane);
+        if (hit.IsDirectory) await pane.NavigateAsync(hit.FullPath);
+        else await pane.NavigateAsync(hit.ParentDirectory, hit.FullPath);
+        pane.FocusList();
+    }
+
+    private async Task CalculateFolderSizeAsync(FilePane pane, FileEntry entry)
+    {
+        if (!_folderSizes.TryBegin(entry.FullPath, pane.Provider.PathComparer)) return;
+        if (_sizingPane is not null && _sizingPath is not null) _sizingPane.ShowCalculatedSize(_sizingPath, null);
+        _sizeCancellation?.Cancel();
+        var cancellation = new CancellationTokenSource();
+        _sizeCancellation = cancellation;
+        var generation = ++_sizeGeneration;
+        var path = entry.FullPath;
+        _sizingPane = pane;
+        _sizingPath = path;
+        pane.ShowCalculatedSize(path, "Calculating…");
+        try
+        {
+            var size = await FolderSizeCalculator.MeasureAsync(pane.Provider, path, cancellation.Token);
+            if (generation != _sizeGeneration) return;
+            pane.ShowCalculatedSize(path, FilePane.FormatSize(size.Bytes) + (size.Partial ? "+" : ""));
+        }
+        catch (OperationCanceledException)
+        {
+            if (generation == _sizeGeneration) pane.ShowCalculatedSize(path, null);
+        }
+        catch (Exception ex)
+        {
+            if (generation != _sizeGeneration) return;
+            pane.ShowCalculatedSize(path, null);
+            SetStatus($"Error: {ex.Message}");
+        }
+        finally
+        {
+            if (generation == _sizeGeneration)
+            {
+                _folderSizes.End();
+                _sizeCancellation = null;
+                _sizingPane = null;
+                _sizingPath = null;
+            }
+            cancellation.Dispose();
+        }
+    }
+
     private async void OnKeyDown(object? sender, KeyEventArgs e)
     {
         if (_left.IsDragging || _right.IsDragging) return;
@@ -1294,6 +1355,31 @@ public sealed class MainWindow : Window
         if (e.Key == Key.Escape && !_transfers.IsIdle && !typing)
         {
             e.Handled = true; CancelRunningTransfer(); return;
+        }
+        if (e.Key == Key.Escape && _sizeCancellation is not null && !typing)
+        {
+            e.Handled = true; _sizeCancellation.Cancel(); return;
+        }
+        var find = e.Key == Key.F && e.KeyModifiers == KeyModifiers.Control
+            || e.Key == Key.F7 && e.KeyModifiers == KeyModifiers.Alt;
+        if (find)
+        {
+            e.Handled = true;
+            if (_active.IsRemote)
+            {
+                SetStatus("This pane is showing connections. Switch it to Local for files.");
+                return;
+            }
+            _ = FindFilesAsync();
+            return;
+        }
+        var onButton = e.Source is Visual keySource && (keySource is Button || keySource.GetVisualAncestors().OfType<Button>().Any());
+        if (e.Key == Key.Space && e.KeyModifiers == KeyModifiers.None && !typing && !onButton
+            && _active.CurrentEntry is { IsDirectory: true, IsLink: false } sized && sized.Name != "..")
+        {
+            e.Handled = true;
+            _ = CalculateFolderSizeAsync(_active, sized);
+            return;
         }
         if (e.Key == Key.T && e.KeyModifiers.HasFlag(KeyModifiers.Control) && e.KeyModifiers.HasFlag(KeyModifiers.Shift))
         {

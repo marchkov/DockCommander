@@ -63,7 +63,7 @@ native libraries, and installs the same menu entry for all users.
 ## Implemented
 
 - Two equal panes with independent drive buttons and editable paths.
-- Compact location buttons with full-path tooltips and an adaptive «Ещё ▾» overflow menu.
+- Compact location buttons with full-path tooltips and an adaptive «More ▾» overflow menu.
   Linux includes home/root shortcuts and hides system mounts; WSL drives use C:/D: labels.
 - Light and dark themes with a compact toolbar switch; the choice is saved on close.
 - Integrated title bar with custom minimize, maximize/restore and close buttons.
@@ -113,6 +113,8 @@ native libraries, and installs the same menu entry for all users.
 | Ctrl+L | Edit the active path; Enter opens it |
 | Ctrl+Shift+T | Toggle light/dark theme |
 | Ctrl+R | Refresh active pane and drive buttons |
+| Ctrl+F / Alt+F7 | Find files by name from the current directory |
+| Space | Calculate the size of the current directory |
 | Insert | Toggle current entry's mark and advance |
 | Num + / Num - | Mark / unmark files by mask |
 | Num * | Invert file marks |
@@ -134,6 +136,9 @@ Open, view, edit and rename use the current row regardless of marks.
 Numpad selection affects files only and preserves folder marks and the cursor.
 Masks are case-insensitive: `*` matches any text, `?` one character, and `;` separates
 patterns (for example `*.txt;*.md`). Both `*` and `*.*` include extensionless files.
+Find Files matches names only, using the provider's path comparison. `*` and `?` are wildcards, and `;` separates patterns.
+Esc cancels a running search and keeps the results. It does not search file contents. In the built-in editor, Ctrl+F still searches the open document.
+Space on a directory fills its Size cell; Space on a file does nothing extra. Ctrl+Space still toggles a mark.
 These shortcuts do not intercept typing in the path field. In the location chooser,
 use arrows and Enter; Escape keeps the current paths and active pane.
 
@@ -144,7 +149,7 @@ Bytes that are not valid UTF-8 and contain no binary control characters are show
 Obvious binary data, including a NUL, is rejected.
 The editor saves with Ctrl+S, tracks unsaved changes, and asks Save, Don't Save, or Cancel before closing a modified file.
 Escape closes the editor through those same rules. Ctrl+F finds the next or previous match, and Escape closes the find bar first.
-The status line shows the line, column, encoding, and line-ending style. Changing the encoding changes the next save; Reload reads the file again and does not replace unsaved edits.
+The status line shows the line, column, encoding, and line-ending style. Changing the encoding changes the next save. Reload rereads the file through the same provider, using the selected encoding, and does not replace unsaved edits. If that read fails, the open text stays as it is.
 Shift+F4 asks for a file name, creates an empty file in the current folder, and opens it in the editor. The same command is on the right-click menu. It uses the folder's file provider, including a remote connection.
 The external editor remains on the file menu. It defaults to Notepad on Windows.
 Linux requires an editor configured with Ctrl+Shift+F4. Specify an executable path or command without arguments or surrounding quotes.
@@ -173,6 +178,7 @@ Use Ctrl+R after saving changes in the external editor.
   the session. The server key or certificate is confirmed once for that connection and asked again
   only if it changes.
   F3 can view a remote text file, and F4 can edit one through the same connection. Opening it in an external program still needs a local file.
+  WebDAV can replace an existing file in one step. SFTP and FTP write a temporary file, delete the destination, and then rename. If that rename fails, the original file may already be gone; a failed upload leaves it in place.
   A live connection shows Connected. Disconnect keeps the profile and the saved sign-in, and the name stays as Disconnected until Reconnect or Close.
   If the server drops the connection, the session becomes Disconnected. Forget sign-in removes only the saved password or key. Several connections can stay open, and disconnecting one leaves the others alone.
 - Click selects the current row; double-click opens a file or directory.

@@ -48,8 +48,9 @@ A callback may show a modal dialog. No file is silently overwritten.
   `TransferAsync` exposes this as `TransferProgress` (path, bytes, optional file size).
   The local provider copies in cancellable chunks into a staged file, then commits it.
   Same-drive Windows moves use the native move operation and report at file boundaries.
-- Optional `batchProgress` on `TransferAsync` enables a cancellable recursive preflight
-  listing, cached for traversal, and reports `BatchTransferProgress`. Processed byte/file
+- Optional `batchProgress` on `TransferAsync` enables a cancellable preflight listing.
+  Directory traversal uses an explicit stack, not call-stack recursion. The listing is cached
+  for the transfer and reported as `BatchTransferProgress`. Processed byte/file
   totals include skipped subtrees; `SkippedFiles` identifies them separately. Unknown
   sizes give a null byte total. `IsCompleted` is emitted only after successful batch completion.
 - Directory recursion and per-entry conflicts live in the operation service.
@@ -68,7 +69,8 @@ A callback may show a modal dialog. No file is silently overwritten.
   read-only file.
 - `DeleteAsync` takes an explicit `Recycle` or `Permanent` mode.
   Providers must never turn an unsupported recycle request into permanent deletion.
-  A failure after removal has started names the paths already deleted.
+  A failure after removal has started throws `PartialDeletionException`. Its message names the
+  paths already deleted, and `Deleted` lists those names. The original failure is the inner exception.
 - `RemoveEmptyDirectoryAsync` must fail if a directory is nonempty.
 - All mutations must enforce their own path protections as well as service-level checks.
 - Cancellation/errors stop the batch; completed changes are retained and panes refresh.

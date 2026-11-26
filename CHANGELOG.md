@@ -1,7 +1,13 @@
 # Changelog
 
-## Unreleased
+## 0.3.0-alpha.1
 
+- Find files (Ctrl+F or Alt+F7) searches file and folder names from the current directory, including a remote connection. Space calculates the current folder size. These are the last file-manager features before the Alpha freeze.
+- Reload in the editor rereads the file through its provider. A failed reload, or a reload while the text is unsaved, leaves the open text in place.
+- Copy and move walk directories with an explicit stack, including very deep trees.
+- A deletion that stops partway reports the removed names through a structured error instead of matching message text.
+- WebDAV accepts percent-encoded names, including names that contain spaces, on Linux and Windows.
+- WebDAV replaces an existing file with one MOVE. SFTP and FTP still delete the destination and then rename the temporary file, so a failed rename can remove the original. A failed upload does not.
 - Double-click a saved connection to connect. The Edit and Connect buttons keep their own actions.
 - A remote session can be disconnected without deleting its profile. The name stays visible as Disconnected and reconnects with the saved sign-in. Forget sign-in removes only the saved password or key. A connection the server closes becomes Disconnected.
 - Shift+F4 creates a file in the current folder and opens it in the editor. The same command is on the right-click menu. F4 opens a file that is not text, or is too large to edit, with the system application when that file has a local path.
@@ -14,7 +20,7 @@
 - An open remote session stays available to both panes. Another connection opens beside it, newest on the left, and each pane can show a different one. Right-click a connection name to reconnect, edit, or close it. A remembered password or private key is encrypted for this user account. A failed connection asks for those sign-in details again. The server key or certificate is confirmed once per connection and asked again only if it changes.
 - A connected pane keeps its session when switched to Local and back to Remote. A plus button beside the connection opens the saved connections without disconnecting.
 - FTP and FTPS open in the pane that requested them. FTPS uses explicit TLS, or implicit TLS on port 990. Anonymous FTP does not ask for one.
-- WebDAV opens in the pane that requested it. HTTPS is the default, and port 80 stays plain HTTP. Password authentication uses Basic, then Digest when the server asks for it. The certificate follows the same remembered trust as FTPS. Put the collection path, such as `/remote.php/dav/files/user` for Nextcloud, in Initial path.
+- WebDAV opens in the pane that requested it. HTTPS is the default, and port 80 stays plain HTTP. Password authentication uses Basic, then Digest when the server asks for it. The certificate follows the same remembered trust as FTPS. A typed connection uses the server URL; a saved profile without a type still uses its host and initial path.
 - SFTP opens in the pane that requested it. Copy and move use the existing queue.
 - Copy and move can run between two different file-system providers through the same queue.
   The pane can replace its provider without a separate window.
