@@ -14,6 +14,7 @@ public static class ConnectionProtocols
     {
         Sftp => 22,
         Ftp or Ftps => 21,
+        WebDav => 443,
         _ => null
     };
 }
@@ -36,7 +37,11 @@ public sealed record ConnectionProfile(
     string InitialPath = "",
     string Authentication = AuthenticationKinds.Password,
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
-    string? HostFingerprint = null)
+    string? HostFingerprint = null,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    string? WebDavPreset = null,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    string? ServerUrl = null)
 {
     public string Detail
     {
@@ -44,7 +49,9 @@ public sealed record ConnectionProfile(
         {
             var host = Host.Trim();
             var address = Port is int port ? $"{host}:{port}" : host;
-            return $"{Protocol.Trim()} · {address}";
+            var preset = Protocol.Trim().Equals(ConnectionProtocols.WebDav, StringComparison.OrdinalIgnoreCase) &&
+                WebDavPresets.IsKnown(WebDavPreset) ? $" · {WebDavPreset!.Trim()}" : "";
+            return $"{Protocol.Trim()}{preset} · {address}";
         }
     }
 
@@ -56,7 +63,11 @@ public sealed record ConnectionProfile(
         Username = Username.Trim(),
         InitialPath = InitialPath.Trim(),
         Authentication = Authentication.Trim(),
-        HostFingerprint = string.IsNullOrWhiteSpace(HostFingerprint) ? null : HostFingerprint.Trim()
+        HostFingerprint = string.IsNullOrWhiteSpace(HostFingerprint) ? null : HostFingerprint.Trim(),
+        WebDavPreset = Protocol.Trim().Equals(ConnectionProtocols.WebDav, StringComparison.OrdinalIgnoreCase) &&
+            !string.IsNullOrWhiteSpace(WebDavPreset) ? WebDavPreset.Trim() : null,
+        ServerUrl = Protocol.Trim().Equals(ConnectionProtocols.WebDav, StringComparison.OrdinalIgnoreCase) &&
+            !string.IsNullOrWhiteSpace(ServerUrl) ? ServerUrl.Trim() : null
     };
 
     public bool Trusts(string? fingerprint) =>
@@ -73,6 +84,7 @@ public sealed record ConnectionProfile(
             return "Enter a host name or address, without a path.";
         if (profile.Port is < 1 or > 65535) return "Port must be between 1 and 65535.";
         if (!AuthenticationKinds.All.Contains(profile.Authentication)) return "Choose an authentication method.";
+        if (WebDavLocations.Validate(profile) is { } webDav) return webDav;
         return null;
     }
 }

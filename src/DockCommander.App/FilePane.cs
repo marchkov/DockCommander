@@ -15,6 +15,10 @@ using DockCommander.Core.Files;
 
 namespace DockCommander.App;
 
+internal enum SessionLink { Connected, Reconnecting, Disconnected }
+
+internal sealed record OpenSessionChip(string Id, string Name, IFileSystemProvider? Provider, SessionLink Link = SessionLink.Connected);
+
 internal sealed class FileRow(FileEntry entry) : INotifyPropertyChanged
 {
     public FileEntry Entry { get; } = entry;
@@ -86,7 +90,15 @@ internal sealed class FilePane : UserControl
     public event Action<FilePane>? ReturnedToLocal;
     public event Action<FilePane>? RemoteRestored;
     public event Action<FilePane>? RemoteWithoutSession;
+    public event Action<FilePane, string>? SessionChosen;
+    public event Action<FilePane, string>? SessionReconnectRequested;
+    public event Action<FilePane, string>? SessionEditRequested;
+    public event Action<FilePane, string>? SessionDisconnectRequested;
+    public event Action<FilePane, string>? SessionForgetRequested;
+    public event Action<FilePane, string>? SessionCloseRequested;
     public IFileSystemProvider? SessionProvider => _remoteProvider;
+    private readonly Dictionary<string, string> _sessionPaths = new(StringComparer.Ordinal);
+    private List<OpenSessionChip> _openSessions = [];
     public string SessionPath => _remotePath ?? CurrentPath;
     public bool IsRemote { get; private set; }
 
@@ -190,8 +202,9 @@ internal sealed class FilePane : UserControl
         _list.AddHandler(DragDrop.DropEvent, OnDrop);
         var menu = new ContextMenu();
         foreach (var (caption, action) in new[] { ("Open", "open"), ("View · F3", "view"), ("Edit · F4", "edit"),
+                     ("External editor", "external"), ("Choose external editor", "chooseeditor"),
                      ("Copy to other panel · F5", "copy"), ("Move to other panel · F6", "move"),
-                     ("Rename · Shift+F6", "rename"), ("New folder · F7", "mkdir"),
+                     ("Rename · Shift+F6", "rename"), ("New file · Shift+F4", "newfile"), ("New folder · F7", "mkdir"),
                      ("Recycle · F8", "recycle"), ("Refresh · Ctrl+R", "refresh") })
         {
             var item = new MenuItem { Header = caption, Name = "Context_" + action };
@@ -239,7 +252,8 @@ internal sealed class FilePane : UserControl
         {
             var action = item.Name is { } name && name.StartsWith("Context_", StringComparison.Ordinal)
                 ? name["Context_".Length..] : "";
-            item.IsEnabled = onRow || action is "mkdir" or "refresh";
+            if (action == "recycle") item.Header = Provider.SupportsRecycle ? "Recycle · F8" : "Delete · F8";
+            item.IsEnabled = onRow || action is "mkdir" or "newfile" or "refresh";
         }
     }
 
@@ -274,11 +288,52 @@ internal sealed class FilePane : UserControl
     public void OpenRemote(IFileSystemProvider provider)
     {
         ArgumentNullException.ThrowIfNull(provider);
+        RememberSessionPath();
         if (ReferenceEquals(Provider, _homeProvider)) _localPath = CurrentPath;
         _remoteProvider = provider;
         _remotePath = null;
         Provider = provider;
         ShowFiles(true);
+    }
+
+    public string? StoredSessionPath(string id) => _sessionPaths.TryGetValue(id, out var path) ? path : null;
+
+    public void SetOpenSessions(IReadOnlyList<OpenSessionChip> sessions)
+    {
+        _openSessions = sessions.ToList();
+        if (UsesSessionBar()) RenderSessions();
+        else if (_locationButtons.Any(item => IsSessionPath(item.Path))) ClearLocationButtons();
+    }
+
+    public void DetachSession(IFileSystemProvider provider)
+    {
+        if (!ReferenceEquals(_remoteProvider, provider)) return;
+        RememberSessionPath();
+        var viewingRemote = IsRemote || !ReferenceEquals(Provider, _homeProvider);
+        _remoteProvider = null;
+        _remotePath = null;
+        if (!viewingRemote) return;
+        Provider = _homeProvider;
+        ShowCatalog();
+    }
+
+    public void ForgetSession(string id) => _sessionPaths.Remove(id);
+
+    public void ReleaseSession(IFileSystemProvider provider, string id)
+    {
+        _sessionPaths.Remove(id);
+        _openSessions.RemoveAll(session => session.Id == id);
+        if (!ReferenceEquals(_remoteProvider, provider))
+        {
+            if (UsesSessionBar()) RenderSessions();
+            return;
+        }
+        var viewingRemote = IsRemote || !ReferenceEquals(Provider, _homeProvider);
+        _remoteProvider = null;
+        _remotePath = null;
+        if (!viewingRemote) return;
+        Provider = _homeProvider;
+        ShowCatalog();
     }
 
     public void CloseRemote()
@@ -295,6 +350,7 @@ internal sealed class FilePane : UserControl
     {
         if (_remoteProvider is not null && !ReferenceEquals(Provider, _homeProvider))
         {
+            RememberSessionPath();
             _remotePath = CurrentPath;
             Provider = _homeProvider;
             ShowFiles(false);
@@ -326,6 +382,8 @@ internal sealed class FilePane : UserControl
         _remoteMode.Classes.Set("chosen", true);
         _remote.RefreshConnections();
         UpdateSessionButton();
+        if (_openSessions.Count > 0) RenderSessions();
+        else if (_locationButtons.Any(item => IsSessionPath(item.Path))) ClearLocationButtons();
     }
 
     private void ShowFiles(bool remoteSession)
@@ -343,6 +401,8 @@ internal sealed class FilePane : UserControl
 
     public void SetConnections(IReadOnlyList<ConnectionProfile> connections) => _remote.SetConnections(connections);
 
+    public void SetSessionLinks(IReadOnlyDictionary<string, SessionLink> links) => _remote.SetSessionLinks(links);
+
     public void SetActive(bool active)
     {
         _frame.Classes.Set("active", active);
@@ -350,7 +410,8 @@ internal sealed class FilePane : UserControl
 
     public async Task LoadLocationsAsync()
     {
-        SetLocations(await Provider.GetLocationsAsync());
+        if (UsesSessionBar()) RenderSessions();
+        else SetLocations(await Provider.GetLocationsAsync());
     }
 
     internal void SetLocations(IReadOnlyList<LocationEntry> locations)
@@ -399,8 +460,15 @@ internal sealed class FilePane : UserControl
             if (!full) used += widths[i];
             else
             {
-                var item = new MenuItem { Header = $"{Avalonia.Automation.AutomationProperties.GetName(button)} — {path}" };
-                item.Click += (_, _) => { Activated?.Invoke(this); NavigateRequested?.Invoke(this, path); };
+                var caption = Avalonia.Automation.AutomationProperties.GetName(button);
+                var item = new MenuItem { Header = SessionId(path) is null ? $"{caption} — {path}" : caption };
+                var target = path;
+                item.Click += (_, _) =>
+                {
+                    Activated?.Invoke(this);
+                    if (SessionId(target) is { } id) SessionChosen?.Invoke(this, id);
+                    else NavigateRequested?.Invoke(this, target);
+                };
                 menu.Items.Add(item);
             }
         }
@@ -640,9 +708,15 @@ internal sealed class FilePane : UserControl
     }
 
     internal bool CanAcceptDrop(DraggedEntries payload, string directory) => IsEffectivelyEnabled &&
-        payload.Source != this && ReferenceEquals(payload.Source.Provider, Provider) && payload.Entries.Count > 0 &&
-        !payload.Entries.Any(entry => entry.Name == ".." ||
-            Provider.IsSameOrDescendant(Provider.CombinePath(directory, entry.Name), entry.FullPath));
+        payload.Source != this && payload.Entries.Count > 0 &&
+        !payload.Entries.Any(entry => entry.Name == ".." || LandsInsideSource(directory, entry));
+
+    private bool LandsInsideSource(string directory, FileEntry entry)
+    {
+        if (!Provider.CanHandle(entry.FullPath)) return false;
+        try { return Provider.IsSameOrDescendant(Provider.CombinePath(directory, entry.Name), entry.FullPath); }
+        catch (ArgumentException) { return true; }
+    }
 
     private string DropDirectory(DragEventArgs e)
     {
@@ -668,7 +742,7 @@ internal sealed class FilePane : UserControl
         var directory = DropDirectory(e);
         var payload = e.DataTransfer.TryGetValue(DragFormat);
         var allowed = payload is not null && CanAcceptDrop(payload, directory);
-        var external = payload is null && IsEffectivelyEnabled && Provider.SupportsLocalFileDrop &&
+        var external = payload is null && IsEffectivelyEnabled &&
             e.DataTransfer.Contains(DataFormat.File) && e.DragEffects.HasFlag(DragDropEffects.Copy);
         allowed |= external;
         e.DragEffects = !allowed ? DragDropEffects.None : !external && e.KeyModifiers.HasFlag(KeyModifiers.Shift) ? DragDropEffects.Move : DragDropEffects.Copy;
@@ -686,7 +760,7 @@ internal sealed class FilePane : UserControl
             e.Handled = true;
             var copyAllowed = e.DragEffects.HasFlag(DragDropEffects.Copy);
             e.DragEffects = DragDropEffects.None;
-            if (!IsEffectivelyEnabled || !Provider.SupportsLocalFileDrop || !copyAllowed) return;
+            if (!IsEffectivelyEnabled || !copyAllowed) return;
             try
             {
                 var files = e.DataTransfer.TryGetFiles()?.ToArray();
@@ -715,7 +789,7 @@ internal sealed class FilePane : UserControl
 
     internal void RequestExternalDrop(IReadOnlyList<string> paths, string directory)
     {
-        if (IsEffectivelyEnabled && Provider.SupportsLocalFileDrop && paths.Count > 0)
+        if (IsEffectivelyEnabled && paths.Count > 0)
             ExternalDropRequested?.Invoke(this, paths, directory);
     }
 
@@ -741,8 +815,103 @@ internal sealed class FilePane : UserControl
         UpdateCount();
     }
 
+    private bool UsesSessionBar() =>
+        _openSessions.Count > 0 && (IsRemote || (_remoteProvider is not null && !ReferenceEquals(Provider, _homeProvider)));
+
+    private void RememberSessionPath()
+    {
+        if (ActiveSessionId() is not { } id) return;
+        if (!ReferenceEquals(Provider, _homeProvider)) _sessionPaths[id] = CurrentPath;
+        else if (_remotePath is not null) _sessionPaths[id] = _remotePath;
+    }
+
+    private string? ActiveSessionId() =>
+        _remoteProvider is null ? null
+        : _openSessions.FirstOrDefault(session => ReferenceEquals(session.Provider, _remoteProvider))?.Id;
+
+    private void RenderSessions()
+    {
+        _locations.Children.Clear();
+        _locationButtons.Clear();
+        var active = ActiveSessionId();
+        foreach (var session in _openSessions)
+        {
+            var caption = new TextBlock
+            {
+                Name = "OpenSessionLabel-" + session.Id,
+                Text = SessionCaption(session), MaxWidth = 160, TextTrimming = TextTrimming.CharacterEllipsis
+            };
+            var button = new Button
+            {
+                Name = "OpenSession-" + session.Id,
+                Content = caption,
+                Padding = new Thickness(9, 4),
+                MinHeight = 28
+            };
+            button.Classes.Add("flat");
+            if (session.Link == SessionLink.Disconnected) button.Classes.Add("session-off");
+            if (session.Id == active) button.Classes.Add("chosen");
+            Avalonia.Automation.AutomationProperties.SetName(button, SessionCaption(session));
+            ToolTip.SetTip(button, session.Link switch
+            {
+                SessionLink.Reconnecting => "Reconnecting…",
+                SessionLink.Disconnected => "Disconnected. The profile is kept. Click to reconnect.",
+                _ => "Connected. Right-click to reconnect, disconnect, edit, or close."
+            });
+            var id = session.Id;
+            button.Click += (_, _) => { Activated?.Invoke(this); SessionChosen?.Invoke(this, id); };
+            var menu = new ContextMenu();
+            menu.Items.Add(SessionMenu("Reconnect", () => SessionReconnectRequested?.Invoke(this, id)));
+            if (session.Link == SessionLink.Connected)
+                menu.Items.Add(SessionMenu("Disconnect", () => SessionDisconnectRequested?.Invoke(this, id)));
+            menu.Items.Add(SessionMenu("Edit", () => SessionEditRequested?.Invoke(this, id)));
+            menu.Items.Add(SessionMenu("Forget sign-in", () => SessionForgetRequested?.Invoke(this, id)));
+            menu.Items.Add(SessionMenu("Close", () => SessionCloseRequested?.Invoke(this, id)));
+            button.ContextMenu = menu;
+            _locations.Children.Add(button);
+            _locationButtons.Add((SessionPathKey(id), button));
+        }
+        ArrangeLocations();
+    }
+
+    private static string SessionCaption(OpenSessionChip session) => session.Link switch
+    {
+        SessionLink.Reconnecting => session.Name + " · Reconnecting",
+        SessionLink.Disconnected => session.Name + " · Disconnected",
+        _ => session.Name
+    };
+
+    private static MenuItem SessionMenu(string caption, Action invoke)
+    {
+        var item = new MenuItem { Header = caption };
+        item.Click += (_, _) => invoke();
+        return item;
+    }
+
+    private void ClearLocationButtons()
+    {
+        _locations.Children.Clear();
+        _locationButtons.Clear();
+        _moreLocations.IsVisible = false;
+        _moreLocations.ContextMenu = null;
+    }
+
+    private static bool IsSessionPath(string path) => path.StartsWith("session:", StringComparison.Ordinal);
+
+    private static string SessionPathKey(string id) => "session:" + id;
+
+    private static string? SessionId(string path) => IsSessionPath(path) ? path["session:".Length..] : null;
+
     private void UpdateLocationSelection()
     {
+        if (_locationButtons.Any(item => IsSessionPath(item.Path)))
+        {
+            var active = ActiveSessionId();
+            foreach (var (path, button) in _locationButtons)
+                button.Classes.Set("chosen", active is not null && path == SessionPathKey(active));
+            _moreLocations.Classes.Set("chosen", _locationButtons.Any(item => !item.Button.IsVisible && item.Button.Classes.Contains("chosen")));
+            return;
+        }
         var best = _locationButtons.Where(item => Provider.IsSameOrDescendant(CurrentPath, item.Path))
             .OrderByDescending(item => item.Path.Length).FirstOrDefault().Path;
         foreach (var (path, button) in _locationButtons)

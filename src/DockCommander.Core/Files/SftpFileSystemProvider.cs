@@ -13,7 +13,7 @@ public sealed class SftpFileSystemProvider : IFileSystemProvider, IDisposable
     {
         if (string.IsNullOrWhiteSpace(connectionId) || connectionId.Contains('/') || connectionId.Contains(':'))
             throw new ArgumentException("A connection id cannot contain ':' or '/'.");
-        if (scheme is not ("sftp" or "ftp")) throw new ArgumentException("The remote scheme must be sftp or ftp.");
+        if (scheme is not ("sftp" or "ftp" or "webdav")) throw new ArgumentException("The remote scheme must be sftp, ftp, or webdav.");
         _remote = remote;
         _id = connectionId.Trim();
         _scheme = scheme;
@@ -25,6 +25,7 @@ public sealed class SftpFileSystemProvider : IFileSystemProvider, IDisposable
     public string Id => _scheme + ":" + _id;
     public string DisplayName => _displayName;
     public bool SupportsRecycle => false;
+    public bool CanWriteFileContent => true;
     public StringComparer PathComparer => StringComparer.Ordinal;
 
     public bool CanHandle(string path) =>

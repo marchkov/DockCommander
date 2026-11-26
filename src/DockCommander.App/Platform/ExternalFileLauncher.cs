@@ -52,7 +52,7 @@ internal sealed class ExternalFileLauncher : IExternalFileLauncher
         {
             if (OperatingSystem.IsWindows()) editor = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.System), "notepad.exe");
             else if (OperatingSystem.IsMacOS()) { editor = "/usr/bin/open"; macDefault = true; }
-            else throw new NotSupportedException("Choose an external editor with Shift+F4 first.");
+            else throw new NotSupportedException("Choose an external editor with Ctrl+Shift+F4 first.");
         }
         // No shell command or concatenated arguments: a file path is exactly one argument.
         var start = new ProcessStartInfo(editor) { UseShellExecute = false, WorkingDirectory = Path.GetDirectoryName(full)! };

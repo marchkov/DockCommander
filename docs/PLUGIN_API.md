@@ -35,9 +35,9 @@ through `ITrashService`; the UI only checks the provider's `SupportsRecycle` cap
 
 ## Operations
 
-`FileOperationService` serializes each batch with a semaphore. The application queues confirmed
-copy and move requests and runs one transfer at a time. Delete, rename, and folder creation stay
-outside that queue and are refused while a transfer is still queued. Conflict decisions are
+`FileOperationService` serializes delete, rename, and folder creation with a semaphore. The application queues confirmed
+copy and move requests and runs one transfer at a time. Those mutations can run while a transfer is in progress.
+Conflict decisions are
 requested through an async callback when that transfer reaches the existing file.
 A callback may show a modal dialog. No file is silently overwritten.
 

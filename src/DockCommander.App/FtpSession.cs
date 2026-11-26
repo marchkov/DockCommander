@@ -84,7 +84,7 @@ internal sealed class FluentFtpRemote : ISftpRemote
 
     public SftpRemoteEntry? TryStat(string path, CancellationToken cancellationToken)
     {
-        _gate.Wait(cancellationToken);
+        EnterOrBusy(cancellationToken);
         try
         {
             EnsureConnected();
@@ -145,9 +145,17 @@ internal sealed class FluentFtpRemote : ISftpRemote
         }
     }
 
+    private void EnterOrBusy(CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        if (_gate.Wait(0)) return;
+        cancellationToken.ThrowIfCancellationRequested();
+        throw new IOException("This connection is busy transferring a file.");
+    }
+
     private T Guard<T>(CancellationToken cancellationToken, Func<T> action)
     {
-        _gate.Wait(cancellationToken);
+        EnterOrBusy(cancellationToken);
         try
         {
             EnsureConnected();

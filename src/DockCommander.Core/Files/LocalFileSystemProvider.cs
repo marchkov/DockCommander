@@ -8,6 +8,7 @@ public sealed class LocalFileSystemProvider(ITrashService? trash = null) : IFile
     public string Id => "local";
     public string DisplayName => "Local";
     public bool SupportsRecycle => _trash.IsSupported;
+    public bool CanWriteFileContent => true;
     public bool SupportsLocalFileDrop => true;
     public async Task<FileEntry> ResolveDroppedFileAsync(string localPath, CancellationToken cancellationToken = default)
     {

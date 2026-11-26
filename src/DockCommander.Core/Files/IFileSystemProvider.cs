@@ -7,6 +7,7 @@ public interface IFileSystemProvider
     string Id { get; }
     string DisplayName { get; }
     bool SupportsRecycle { get; }
+    bool CanWriteFileContent => false;
     bool SupportsLocalFileDrop => false;
     Task<FileEntry> ResolveDroppedFileAsync(string localPath, CancellationToken cancellationToken = default) =>
         Task.FromException<FileEntry>(new NotSupportedException("This provider cannot accept files from other applications."));

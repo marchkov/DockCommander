@@ -253,6 +253,8 @@ public sealed class WindowTests
             Assert.False(Item("Context_copy").IsEnabled);
             Assert.False(Item("Context_recycle").IsEnabled);
             Assert.True(Item("Context_mkdir").IsEnabled);
+            Assert.True(Item("Context_newfile").IsEnabled);
+            Assert.Equal("New file · Shift+F4", Item("Context_newfile").Header);
             Assert.True(Item("Context_refresh").IsEnabled);
         }
         finally { await Close(window); }
@@ -405,7 +407,7 @@ public sealed class WindowTests
         await ConnectionStore.Beside(settings).SaveAsync(
         [
             new("prod", "Production", ConnectionProtocols.Sftp, "server.example.com", 22, "root", "/var/www"),
-            new("nas", "Old NAS", ConnectionProtocols.WebDav, "192.168.1.20", 21)
+            new("nas", "Old NAS", ConnectionProtocols.WebDav, "192.168.1.20", 443, "reader")
         ]);
         var window = new MainWindow(settings, new FixedLocationsProvider(new LocalFileSystemProvider(),
             _ => Task.FromResult<IReadOnlyList<LocationEntry>>([new("t", "Test", temp.Root)])));
@@ -432,10 +434,43 @@ public sealed class WindowTests
             Assert.DoesNotContain(panes[0].GetVisualDescendants().OfType<TextBlock>(), block => block.Text == "Production");
             panes[0].GetVisualDescendants().OfType<Button>().Single(button => Equals(button.Content, "Connect"))
                 .RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
-            Assert.Contains(window.GetVisualDescendants().OfType<TextBlock>(), block => block.Text == "WebDAV is not implemented yet.");
+            await WaitUntil(() => window.OwnedWindows.Any());
+            Click(window.OwnedWindows.Single(), "Cancel");
+            await WaitUntil(() => !window.OwnedWindows.Any() && panes[0].IsRemote);
             Press(window, Key.F5);
             Assert.Contains(window.GetVisualDescendants().OfType<TextBlock>(),
                 block => block.Text == "This pane is showing connections. Switch it to Local for files.");
+        }
+        finally { await Close(window); }
+    }
+
+    [AvaloniaFact]
+    public async Task DoubleClickingAConnectionRowStartsConnect()
+    {
+        using var temp = new ScratchDirectory();
+        var settings = new SettingsStore(Path.Combine(temp.Root, "settings.json"));
+        await settings.SaveAsync(new(temp.Folder("left"), temp.Folder("right")));
+        await ConnectionStore.Beside(settings).SaveAsync(
+            [new("prod", "Production", ConnectionProtocols.Sftp, "server.example.com", 22, "root", "/")]);
+        var window = new MainWindow(settings, new FixedLocationsProvider(new LocalFileSystemProvider(),
+            _ => Task.FromResult<IReadOnlyList<LocationEntry>>([new("t", "Test", temp.Root)])));
+        window.Show();
+        try
+        {
+            var pane = window.GetVisualDescendants().OfType<FilePane>().First();
+            await WaitUntil(() => pane.IsEnabled);
+            pane.GetVisualDescendants().OfType<Button>().Single(button => button.Name == "RemoteMode")
+                .RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+            await WaitUntil(() => pane.GetVisualDescendants().OfType<TextBlock>().Any(block => block.Text == "Production"));
+            var name = pane.GetVisualDescendants().OfType<TextBlock>().First(block => block.Text == "Production");
+            name.RaiseEvent(new TappedEventArgs(InputElement.DoubleTappedEvent, null!));
+            await WaitUntil(() => window.OwnedWindows.Any());
+            Assert.NotNull(window.OwnedWindows.Single().GetVisualDescendants().OfType<TextBox>().SingleOrDefault(box => box.Name == "SftpPassword"));
+            var edit = pane.GetVisualDescendants().OfType<Button>().Single(button => Equals(button.Content, "Edit"));
+            edit.RaiseEvent(new TappedEventArgs(InputElement.DoubleTappedEvent, null!));
+            window.UpdateLayout();
+            Dispatcher.UIThread.RunJobs();
+            Assert.Single(window.OwnedWindows);
         }
         finally { await Close(window); }
     }
@@ -559,6 +594,55 @@ public sealed class WindowTests
     }
 
     [AvaloniaFact]
+    public async Task WebDavPresetSavesTheServerUrlAndNotTheInternalPath()
+    {
+        using var temp = new ScratchDirectory();
+        var settings = new SettingsStore(Path.Combine(temp.Root, "settings.json"));
+        await settings.SaveAsync(new(temp.Folder("left"), temp.Folder("right")));
+        var window = new MainWindow(settings, new FixedLocationsProvider(new LocalFileSystemProvider(),
+            _ => Task.FromResult<IReadOnlyList<LocationEntry>>([new("t", "Test", temp.Root)])));
+        window.Show();
+        try
+        {
+            var pane = window.GetVisualDescendants().OfType<FilePane>().First();
+            await WaitUntil(() => pane.IsEnabled && pane.CurrentPath.StartsWith(temp.Root, StringComparison.Ordinal));
+            pane.GetVisualDescendants().OfType<Button>().Single(button => button.Name == "RemoteMode")
+                .RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+            window.UpdateLayout(); Dispatcher.UIThread.RunJobs();
+            pane.GetVisualDescendants().OfType<Button>().Single(button => button.Name == "AddConnection")
+                .RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+            await WaitUntil(() => window.OwnedWindows.Any());
+            var dialog = window.OwnedWindows.Single();
+            dialog.GetVisualDescendants().OfType<TextBox>().Single(box => box.Name == "Name").Text = "Home Cloud";
+            var protocol = dialog.GetVisualDescendants().OfType<ComboBox>().Single(box => box.Items.Cast<object?>().Contains(ConnectionProtocols.WebDav) && box.Name != "WebDavType");
+            protocol.SelectedItem = ConnectionProtocols.WebDav;
+            window.UpdateLayout(); Dispatcher.UIThread.RunJobs();
+            Assert.False(dialog.GetVisualDescendants().OfType<TextBox>().Single(box => box.Name == "Host").IsEffectivelyVisible);
+            var type = dialog.GetVisualDescendants().OfType<ComboBox>().Single(box => box.Name == "WebDavType");
+            Assert.True(type.IsEffectivelyVisible);
+            type.SelectedItem = WebDavPresets.Nextcloud;
+            var server = dialog.GetVisualDescendants().OfType<TextBox>().Single(box => box.Name == "ServerUrl");
+            Assert.Equal("https://cloud.example.com/", server.PlaceholderText);
+            server.Text = "https://cloud.example.com/";
+            dialog.GetVisualDescendants().OfType<TextBox>().Single(box => box.Name == "Username").Text = "denis";
+            dialog.GetVisualDescendants().OfType<Button>().Single(button => Equals(button.Content, "Save"))
+                .RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+            await WaitUntil(() =>
+            {
+                window.UpdateLayout();
+                return pane.GetVisualDescendants().OfType<TextBlock>().Any(block => block.Text == "Home Cloud");
+            });
+            var saved = File.ReadAllText(ConnectionStore.Beside(settings).Path);
+            Assert.Contains("\"WebDavPreset\": \"Nextcloud\"", saved);
+            Assert.Contains("https://cloud.example.com/", saved);
+            Assert.DoesNotContain("remote.php", saved);
+            Assert.DoesNotContain("\"Password\":", saved);
+            Assert.DoesNotContain("\"Passphrase\":", saved);
+        }
+        finally { await Close(window); }
+    }
+
+    [AvaloniaFact]
     public async Task FtpConnectOpensThatPaneAndDoesNotStoreThePassword()
     {
         using var temp = new ScratchDirectory();
@@ -598,6 +682,51 @@ public sealed class WindowTests
             Assert.Equal("ftp-secret", connector.Password);
             Assert.DoesNotContain("ftp-secret", File.ReadAllText(ConnectionStore.Beside(settings).Path));
             Assert.StartsWith(temp.Root, panes[1].CurrentPath, StringComparison.Ordinal);
+        }
+        finally { await Close(window); }
+    }
+
+    [AvaloniaFact]
+    public async Task WebDavConnectOpensThatPaneAndDoesNotStoreThePassword()
+    {
+        using var temp = new ScratchDirectory();
+        var settings = new SettingsStore(Path.Combine(temp.Root, "settings.json"));
+        await settings.SaveAsync(new(temp.Folder("left"), temp.Folder("right")));
+        await ConnectionStore.Beside(settings).SaveAsync(
+        [new("cloud", "Cloud", ConnectionProtocols.WebDav, "cloud.example.com", 443, "denis", "/dav")]);
+        var remote = new MemorySftp();
+        remote.AddDirectory("/");
+        remote.AddDirectory("/dav");
+        remote.AddFile("/dav/notes.txt", "webdav");
+        var connector = new RecordingConnector(remote, "webdav");
+        var window = new MainWindow(settings, new FixedLocationsProvider(new LocalFileSystemProvider(),
+            _ => Task.FromResult<IReadOnlyList<LocationEntry>>([new("t", "Test", temp.Root)])), webDav: connector);
+        window.Show();
+        try
+        {
+            var panes = window.GetVisualDescendants().OfType<FilePane>().ToArray();
+            await WaitUntil(() => panes.All(pane => pane.IsEnabled && pane.CurrentPath.StartsWith(temp.Root, StringComparison.Ordinal)));
+            panes[0].GetVisualDescendants().OfType<Button>().Single(button => button.Name == "RemoteMode")
+                .RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+            window.UpdateLayout(); Dispatcher.UIThread.RunJobs();
+            panes[0].GetVisualDescendants().OfType<Button>().Single(button => Equals(button.Content, "Connect"))
+                .RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+            await WaitUntil(() => window.OwnedWindows.Any());
+            var dialog = window.OwnedWindows.Single();
+            dialog.GetVisualDescendants().OfType<TextBox>().Single(box => box.Name == "SftpPassword").Text = "dav-secret";
+            dialog.GetVisualDescendants().OfType<CheckBox>().Single(box => box.Name == "RememberSecret").IsChecked = false;
+            dialog.GetVisualDescendants().OfType<Button>().Single(button => Equals(button.Content, "Connect"))
+                .RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+            await WaitUntil(() =>
+            {
+                window.UpdateLayout();
+                return panes[0].IsEnabled && !panes[0].IsRemote &&
+                    panes[0].GetVisualDescendants().OfType<TextBlock>().Any(block => block.Text == "notes.txt");
+            });
+            Assert.Equal("/dav", panes[0].CurrentDisplayPath);
+            Assert.Equal("dav-secret", connector.Password);
+            Assert.DoesNotContain("dav-secret", File.ReadAllText(ConnectionStore.Beside(settings).Path));
+            Assert.False(panes[1].IsRemote);
         }
         finally { await Close(window); }
     }
@@ -657,6 +786,162 @@ public sealed class WindowTests
             Assert.Equal(1, second.Calls);
         }
         finally { await Close(again); }
+    }
+
+    [AvaloniaFact]
+    public async Task ASecondSessionStaysBesideTheFirstAndCanBeClosed()
+    {
+        using var temp = new ScratchDirectory();
+        var settings = new SettingsStore(Path.Combine(temp.Root, "settings.json"));
+        await settings.SaveAsync(new(temp.Folder("left"), temp.Folder("right")));
+        await ConnectionStore.Beside(settings).SaveAsync(
+        [
+            new("prod", "Production", ConnectionProtocols.Sftp, "server.example.com", 22, "root", "/"),
+            new("backup", "Backup", ConnectionProtocols.Sftp, "backup.example.com", 22, "root", "/")
+        ]);
+        var production = new MemorySftp();
+        production.AddDirectory("/");
+        production.AddFile("/hello.txt", "hi");
+        var backup = new MemorySftp();
+        backup.AddDirectory("/");
+        backup.AddFile("/notes.txt", "notes");
+        var connector = new MappedConnector(new Dictionary<string, MemorySftp> { ["prod"] = production, ["backup"] = backup });
+        var window = new MainWindow(settings, new FixedLocationsProvider(new LocalFileSystemProvider(),
+            _ => Task.FromResult<IReadOnlyList<LocationEntry>>([new("t", "Test", temp.Root)])), sftp: connector);
+        window.Show();
+        try
+        {
+            var panes = window.GetVisualDescendants().OfType<FilePane>().ToArray();
+            await OpenCatalog(panes[0]);
+            await SignIn(window, panes[0], "Production", "one");
+            await WaitUntil(() => SeesFile(window, "hello.txt"));
+            var plus = panes[0].GetVisualDescendants().OfType<Button>().Single(button => button.Name == "SavedConnections");
+            plus.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+            await WaitUntil(() => panes[0].IsRemote);
+            await SignIn(window, panes[0], "Backup", "two");
+            await WaitUntil(() => SeesFile(window, "notes.txt") && SessionNames(panes[0]).SequenceEqual(["Backup", "Production"]));
+            Assert.Contains("chosen", panes[0].GetVisualDescendants().OfType<Button>().Single(button => button.Name == "OpenSession-backup").Classes);
+            panes[1].GetVisualDescendants().OfType<Button>().Single(button => button.Name == "RemoteMode")
+                .RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+            await WaitUntil(() => panes[1].IsEnabled && panes[1].IsRemote && SessionNames(panes[1]).SequenceEqual(["Backup", "Production"]));
+            panes[1].GetVisualDescendants().OfType<Button>().Single(button => button.Name == "OpenSession-prod")
+                .RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+            await WaitUntil(() =>
+                panes[1].IsEnabled && !panes[1].IsRemote &&
+                panes[1].GetVisualDescendants().OfType<TextBlock>().Any(block => block.Text == "hello.txt") &&
+                panes[0].GetVisualDescendants().OfType<TextBlock>().Any(block => block.Text == "notes.txt"));
+            var close = panes[0].GetVisualDescendants().OfType<Button>().Single(button => button.Name == "OpenSession-backup")
+                .ContextMenu!.Items.OfType<MenuItem>().Single(item => Equals(item.Header, "Close"));
+            close.RaiseEvent(new RoutedEventArgs(MenuItem.ClickEvent));
+            await WaitUntil(() =>
+                panes[0].IsRemote &&
+                !panes[0].GetVisualDescendants().OfType<Button>().Any(button => button.Name == "OpenSession-backup") &&
+                panes[1].GetVisualDescendants().OfType<TextBlock>().Any(block => block.Text == "hello.txt") &&
+                panes[1].GetVisualDescendants().OfType<Button>().Any(button => button.Name == "OpenSession-prod"));
+            Assert.Equal(2, connector.Calls);
+        }
+        finally { await Close(window); }
+
+        static async Task OpenCatalog(FilePane pane)
+        {
+            await WaitUntil(() => pane.IsEnabled);
+            pane.GetVisualDescendants().OfType<Button>().Single(button => button.Name == "RemoteMode")
+                .RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+            pane.UpdateLayout();
+            Dispatcher.UIThread.RunJobs();
+        }
+
+        static async Task SignIn(MainWindow owner, FilePane pane, string name, string password)
+        {
+            var label = pane.GetVisualDescendants().OfType<TextBlock>().First(block => block.Text == name);
+            var row = label.GetVisualAncestors().OfType<Grid>().First(grid =>
+                grid.GetVisualDescendants().OfType<Button>().Any(button => Equals(button.Content, "Connect")));
+            row.GetVisualDescendants().OfType<Button>().First(button => Equals(button.Content, "Connect"))
+                .RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+            await WaitUntil(() => owner.OwnedWindows.Any());
+            var dialog = owner.OwnedWindows.Single();
+            dialog.GetVisualDescendants().OfType<TextBox>().Single(box => box.Name == "SftpPassword").Text = password;
+            dialog.GetVisualDescendants().OfType<CheckBox>().Single(box => box.Name == "RememberSecret").IsChecked = false;
+            Click(dialog, "Connect");
+        }
+
+        static string[] SessionNames(FilePane pane) => pane.GetVisualDescendants().OfType<Button>()
+            .Where(button => button.Name?.StartsWith("OpenSession-", StringComparison.Ordinal) == true)
+            .Select(button => button.Name!["OpenSession-".Length..])
+            .Select(id => id == "backup" ? "Backup" : "Production")
+            .ToArray();
+    }
+
+    [AvaloniaFact]
+    public async Task DisconnectKeepsTheProfileAndADroppedServerEndsTheLiveSession()
+    {
+        using var temp = new ScratchDirectory();
+        var settings = new SettingsStore(Path.Combine(temp.Root, "settings.json"));
+        await settings.SaveAsync(new(temp.Folder("left"), temp.Folder("right")));
+        await ConnectionStore.Beside(settings).SaveAsync(
+            [new("nas", "Old NAS", ConnectionProtocols.Sftp, "nas.example.com", 22, "reader", "/")]);
+        var remote = new MemorySftp();
+        remote.AddDirectory("/");
+        remote.AddFile("/notes.txt", "keep");
+        var connector = new RecordingConnector(remote);
+        var window = new MainWindow(settings, new FixedLocationsProvider(new LocalFileSystemProvider(),
+            _ => Task.FromResult<IReadOnlyList<LocationEntry>>([new("t", "Test", temp.Root)])), sftp: connector);
+        window.Show();
+        try
+        {
+            await SubmitPassword(window, "saved-secret", remember: true);
+            await WaitUntil(() => window.GetVisualDescendants().OfType<TextBlock>().Any(block => block.Text == "notes.txt"));
+            var secrets = SecretStore.Beside(settings).Path;
+            Assert.True(File.Exists(secrets));
+            Menu("Disconnect").RaiseEvent(new RoutedEventArgs(MenuItem.ClickEvent));
+            await WaitUntil(() => window.GetVisualDescendants().OfType<TextBlock>().Any(block => block.Text == "Old NAS · Disconnected")
+                && window.GetVisualDescendants().OfType<FilePane>().First().IsRemote);
+            Assert.Contains("Old NAS", File.ReadAllText(ConnectionStore.Beside(settings).Path));
+            Assert.True(File.Exists(secrets));
+            Menu("Reconnect").RaiseEvent(new RoutedEventArgs(MenuItem.ClickEvent));
+            await WaitUntil(() => connector.Calls == 2 && FilesAreVisible());
+            Assert.Empty(window.OwnedWindows);
+            remote.FailClosed = true;
+            Press(window, Key.R, RawInputModifiers.Control);
+            await WaitUntil(() => window.GetVisualDescendants().OfType<TextBlock>().Any(block => block.Text == "Old NAS · Disconnected")
+                && window.GetVisualDescendants().OfType<TextBlock>().Any(block => block.Text == "Disconnected: The SFTP connection closed."));
+            remote.FailClosed = false;
+            window.GetVisualDescendants().OfType<FilePane>().First().GetVisualDescendants().OfType<Button>()
+                .Single(button => button.Name == "OpenSession-nas")
+                .RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+            await WaitUntil(() => connector.Calls == 3 && FilesAreVisible());
+            Menu("Forget sign-in").RaiseEvent(new RoutedEventArgs(MenuItem.ClickEvent));
+            await WaitUntil(() => window.OwnedWindows.Any());
+            Click(window.OwnedWindows.Single(), "Forget");
+            await WaitUntil(() => !File.Exists(secrets));
+            Menu("Close").RaiseEvent(new RoutedEventArgs(MenuItem.ClickEvent));
+            await WaitUntil(() => !window.GetVisualDescendants().OfType<Button>().Any(button => button.Name == "OpenSession-nas"));
+            Assert.Contains("Old NAS", File.ReadAllText(ConnectionStore.Beside(settings).Path));
+        }
+        finally { await Close(window); }
+
+        MenuItem Menu(string caption) => window.GetVisualDescendants().OfType<FilePane>().First()
+            .GetVisualDescendants().OfType<Button>().Single(button => button.Name == "OpenSession-nas")
+            .ContextMenu!.Items.OfType<MenuItem>().Single(item => Equals(item.Header, caption));
+
+        bool FilesAreVisible()
+        {
+            var pane = window.GetVisualDescendants().OfType<FilePane>().First();
+            var files = pane.GetVisualDescendants().OfType<ListBox>().Single(list => list.Name != "ConnectionList");
+            return files.IsEffectivelyVisible && pane.GetVisualDescendants().OfType<TextBlock>().Any(block => block.Text == "notes.txt");
+        }
+    }
+
+    private sealed class MappedConnector(IReadOnlyDictionary<string, MemorySftp> remotes) : ISftpConnector
+    {
+        public int Calls { get; private set; }
+
+        public Task<IFileSystemProvider> ConnectAsync(ConnectionProfile profile, SftpCredentials credentials,
+            Func<string, bool> trustHost, CancellationToken cancellationToken) => Task.Run<IFileSystemProvider>(() =>
+        {
+            Calls++;
+            return new SftpFileSystemProvider(remotes[profile.Id], profile.Id, profile.Name, profile.InitialPath);
+        });
     }
 
     [AvaloniaFact]
@@ -839,7 +1124,7 @@ public sealed class WindowTests
         Click(dialog, "Connect");
     }
 
-    private sealed class RecordingConnector(MemorySftp remote, string scheme = "sftp") : ISftpConnector, IFtpConnector
+    private sealed class RecordingConnector(MemorySftp remote, string scheme = "sftp") : ISftpConnector, IFtpConnector, IWebDavConnector
     {
         public string? Password { get; private set; }
         public int Calls { get; private set; }
@@ -977,6 +1262,108 @@ public sealed class WindowTests
     }
 
     [AvaloniaFact]
+    public async Task RemoteF8AsksForPermanentDeletion()
+    {
+        using var temp = new ScratchDirectory();
+        var settings = new SettingsStore(Path.Combine(temp.Root, "settings.json"));
+        await settings.SaveAsync(new(temp.Folder("left"), temp.Folder("right")));
+        await ConnectionStore.Beside(settings).SaveAsync(
+            [new("prod", "Production", ConnectionProtocols.Sftp, "server.example.com", 22, "root", "/")]);
+        var remote = new MemorySftp();
+        remote.AddDirectory("/");
+        remote.AddFile("/hello.txt", "hi");
+        var window = new MainWindow(settings, new FixedLocationsProvider(new LocalFileSystemProvider(),
+            _ => Task.FromResult<IReadOnlyList<LocationEntry>>([new("t", "Test", temp.Root)])), sftp: new RecordingConnector(remote));
+        window.Show();
+        try
+        {
+            var pane = window.GetVisualDescendants().OfType<FilePane>().First();
+            await WaitUntil(() => pane.IsEnabled && pane.CurrentPath.StartsWith(temp.Root, StringComparison.Ordinal));
+            pane.GetVisualDescendants().OfType<Button>().Single(button => button.Name == "RemoteMode")
+                .RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+            window.UpdateLayout(); Dispatcher.UIThread.RunJobs();
+            pane.GetVisualDescendants().OfType<Button>().Single(button => Equals(button.Content, "Connect"))
+                .RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+            await WaitUntil(() => window.OwnedWindows.Any());
+            var dialog = window.OwnedWindows.Single();
+            dialog.GetVisualDescendants().OfType<TextBox>().Single(box => box.Name == "SftpPassword").Text = "secret";
+            dialog.GetVisualDescendants().OfType<CheckBox>().Single(box => box.Name == "RememberSecret").IsChecked = false;
+            dialog.GetVisualDescendants().OfType<Button>().Single(button => Equals(button.Content, "Connect"))
+                .RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+            await WaitUntil(() => pane.IsEnabled && !pane.IsRemote &&
+                pane.GetVisualDescendants().OfType<TextBlock>().Any(block => block.Text == "hello.txt"));
+            pane.FocusList(); Dispatcher.UIThread.RunJobs();
+            Press(window, Key.F8);
+            await WaitUntil(() => window.OwnedWindows.Any());
+            Assert.Equal("Delete permanently", window.OwnedWindows.Single().Title);
+            Press(window.OwnedWindows.Single(), Key.Enter);
+            await WaitUntil(() => pane.IsEnabled && !pane.GetVisualDescendants().OfType<TextBlock>().Any(block => block.Text == "hello.txt"));
+            Assert.Null(remote.TryStat("/hello.txt", CancellationToken.None));
+        }
+        finally { await Close(window); }
+    }
+
+    [AvaloniaFact]
+    public async Task DragAndExternalDropReachARemotePane()
+    {
+        using var temp = new ScratchDirectory();
+        var settings = new SettingsStore(Path.Combine(temp.Root, "settings.json"));
+        var right = temp.Folder("right");
+        await settings.SaveAsync(new(temp.Folder("left"), right));
+        await ConnectionStore.Beside(settings).SaveAsync(
+            [new("prod", "Production", ConnectionProtocols.Sftp, "server.example.com", 22, "root", "/")]);
+        var remote = new MemorySftp();
+        remote.AddDirectory("/");
+        remote.AddFile("/hello.txt", "hi");
+        var localFile = temp.File("right/from-local.txt", "local-body");
+        var outside = temp.File("outside.txt", "dropped");
+        var window = new MainWindow(settings, new FixedLocationsProvider(new LocalFileSystemProvider(),
+            _ => Task.FromResult<IReadOnlyList<LocationEntry>>([new("t", "Test", temp.Root)])), sftp: new RecordingConnector(remote));
+        window.Show();
+        try
+        {
+            var panes = window.GetVisualDescendants().OfType<FilePane>().ToArray();
+            await WaitUntil(() => panes.All(pane => pane.IsEnabled && pane.CurrentPath.StartsWith(temp.Root, StringComparison.Ordinal)));
+            panes[0].GetVisualDescendants().OfType<Button>().Single(button => button.Name == "RemoteMode")
+                .RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+            window.UpdateLayout(); Dispatcher.UIThread.RunJobs();
+            panes[0].GetVisualDescendants().OfType<Button>().Single(button => Equals(button.Content, "Connect"))
+                .RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+            await WaitUntil(() => window.OwnedWindows.Any());
+            var dialog = window.OwnedWindows.Single();
+            dialog.GetVisualDescendants().OfType<TextBox>().Single(box => box.Name == "SftpPassword").Text = "secret";
+            dialog.GetVisualDescendants().OfType<CheckBox>().Single(box => box.Name == "RememberSecret").IsChecked = false;
+            dialog.GetVisualDescendants().OfType<Button>().Single(button => Equals(button.Content, "Connect"))
+                .RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+            await WaitUntil(() => panes[0].IsEnabled && !panes[0].IsRemote &&
+                panes[0].GetVisualDescendants().OfType<TextBlock>().Any(block => block.Text == "hello.txt"));
+            await panes[1].NavigateAsync(panes[1].CurrentPath, localFile);
+            var outgoing = new FilePane.DraggedEntries(panes[1], [(await panes[1].Provider.GetEntryAsync(localFile))!]);
+            Assert.True(panes[0].CanAcceptDrop(outgoing, panes[0].CurrentPath));
+            panes[0].RequestDrop(outgoing, panes[0].CurrentPath, false);
+            await WaitUntil(() => window.OwnedWindows.Any());
+            Assert.Equal("Copy", window.OwnedWindows.Single().Title);
+            Press(window.OwnedWindows.Single(), Key.Enter);
+            await WaitUntilReady(window, panes[0]);
+            Assert.Equal("local-body", remote.ReadFile("/from-local.txt"));
+            var incoming = new FilePane.DraggedEntries(panes[0], [(await panes[0].Provider.GetEntryAsync(panes[0].Provider.NormalizePath("/hello.txt")))!]);
+            Assert.True(panes[1].CanAcceptDrop(incoming, panes[1].CurrentPath));
+            panes[1].RequestDrop(incoming, panes[1].CurrentPath, false);
+            await WaitUntil(() => window.OwnedWindows.Any());
+            Press(window.OwnedWindows.Single(), Key.Enter);
+            await WaitUntilReady(window, panes[1]);
+            Assert.Equal("hi", File.ReadAllText(Path.Combine(right, "hello.txt")));
+            panes[0].RequestExternalDrop([outside], panes[0].CurrentPath);
+            await WaitUntil(() => window.OwnedWindows.Any());
+            Press(window.OwnedWindows.Single(), Key.Enter);
+            await WaitUntilReady(window, panes[0]);
+            Assert.Equal("dropped", remote.ReadFile("/outside.txt"));
+            Assert.True(File.Exists(outside));
+        }
+        finally { await Close(window); }
+    }
+
+    [AvaloniaFact]
     public async Task PermanentDeleteConfirmationListsMarkedNames()
     {
         using var temp = new ScratchDirectory();
@@ -1078,8 +1465,12 @@ public sealed class WindowTests
             await WaitUntil(() => left.IsEnabled);
             Assert.Equal(second, Assert.Single(launcher.Opened));
             Press(window, Key.F4);
+            await WaitUntil(() => window.OwnedWindows.OfType<TextEditorWindow>().Any());
+            var editor = Assert.IsType<TextEditorWindow>(window.OwnedWindows.Single());
+            Assert.Contains("b.txt", editor.Title);
+            Assert.Empty(launcher.Edited);
+            Press(editor, Key.Escape);
             await WaitUntil(() => left.IsEnabled);
-            Assert.Equal(second, Assert.Single(launcher.Edited).Path);
             Assert.Equal(first, Assert.Single(left.OperationEntries).FullPath);
             Assert.IsType<ListBoxItem>(window.FocusManager!.GetFocusedElement());
         }
@@ -1172,16 +1563,22 @@ public sealed class WindowTests
         var editor = Path.Combine(temp.Root, "My Editor", "editor.exe");
         try
         {
-            Press(window, Key.F4, RawInputModifiers.Shift);
+            Press(window, Key.F4, RawInputModifiers.Control | RawInputModifiers.Shift);
             await WaitUntil(() => window.OwnedWindows.Any());
             var dialog = window.OwnedWindows.Single();
             Assert.Equal("External editor", dialog.Title);
             dialog.KeyTextInput(editor); Press(dialog, Key.Enter);
             await WaitUntil(() => left.IsEnabled);
             await left.NavigateAsync(left.CurrentPath, source); left.FocusList(); Dispatcher.UIThread.RunJobs();
-            Press(window, Key.F4);
+            left.GetVisualDescendants().OfType<ListBox>().Single().ContextMenu!.Items.OfType<MenuItem>()
+                .Single(item => item.Name == "Context_external")
+                .RaiseEvent(new RoutedEventArgs(MenuItem.ClickEvent));
             await WaitUntil(() => left.IsEnabled);
             Assert.Equal((source, editor), Assert.Single(launcher.Edited));
+            Press(window, Key.F4);
+            await WaitUntil(() => window.OwnedWindows.OfType<TextEditorWindow>().Any());
+            Assert.Single(launcher.Edited);
+            Press(window.OwnedWindows.Single(), Key.Escape);
         }
         finally { await Close(window); }
         Assert.Equal(editor, (await settings.LoadAsync()).EditorExecutable);
@@ -1201,7 +1598,9 @@ public sealed class WindowTests
             await WaitUntil(() => left.IsEnabled);
             Assert.Contains(window.GetVisualDescendants().OfType<TextBlock>(), t => t.Text == "Error: No file association.");
             launcher.Fail = false;
-            Press(window, Key.F4);
+            left.GetVisualDescendants().OfType<ListBox>().Single().ContextMenu!.Items.OfType<MenuItem>()
+                .Single(item => item.Name == "Context_external")
+                .RaiseEvent(new RoutedEventArgs(MenuItem.ClickEvent));
             await WaitUntil(() => left.IsEnabled);
             Assert.Single(launcher.Edited);
         }
@@ -1209,7 +1608,265 @@ public sealed class WindowTests
     }
 
     [AvaloniaFact]
-    public async Task SecondCopyWaitsAndDeleteStaysClosedUntilTheTransferFinishes()
+    public async Task F4EditsALocalFileAndCtrlSClearsTheDirtyState()
+    {
+        using var temp = new ScratchDirectory();
+        var path = temp.File("left/notes.txt", "alpha beta alpha\nsecond");
+        var (window, left, _, _) = await Open(temp);
+        try
+        {
+            await left.NavigateAsync(left.CurrentPath, path); left.FocusList(); Dispatcher.UIThread.RunJobs();
+            Press(window, Key.F4);
+            await WaitUntil(() => window.OwnedWindows.OfType<TextEditorWindow>().Any());
+            var editor = Assert.IsType<TextEditorWindow>(window.OwnedWindows.Single());
+            var text = editor.GetVisualDescendants().OfType<TextBox>().Single(box => box.Name == "EditorText");
+            Assert.False(text.IsReadOnly);
+            Assert.Equal("alpha beta alpha\nsecond", text.Text);
+            Assert.False(editor.IsDirty);
+            text.CaretIndex = text.Text!.IndexOf('\n') + 1;
+            Dispatcher.UIThread.RunJobs();
+            Assert.Equal("Ln 2, Col 1", editor.GetVisualDescendants().OfType<TextBlock>().Single(block => block.Name == "CaretPosition").Text);
+            var wrap = editor.GetVisualDescendants().OfType<CheckBox>().Single(box => box.Name == "WrapLines");
+            wrap.IsChecked = true;
+            Assert.Equal(Avalonia.Media.TextWrapping.Wrap, text.TextWrapping);
+            wrap.IsChecked = false;
+            Assert.Equal(Avalonia.Media.TextWrapping.NoWrap, text.TextWrapping);
+            Press(editor, Key.F, RawInputModifiers.Control);
+            var searchBar = editor.GetVisualDescendants().OfType<StackPanel>().Single(panel => panel.Name == "SearchBar");
+            Assert.True(searchBar.IsVisible);
+            editor.GetVisualDescendants().OfType<TextBox>().Single(box => box.Name == "SearchText").Text = "alpha";
+            Click(editor, "Next");
+            Assert.Equal(0, Math.Min(text.SelectionStart, text.SelectionEnd));
+            Click(editor, "Next");
+            Assert.Equal(text.Text.LastIndexOf("alpha", StringComparison.Ordinal), Math.Min(text.SelectionStart, text.SelectionEnd));
+            Click(editor, "Previous");
+            Assert.Equal(0, Math.Min(text.SelectionStart, text.SelectionEnd));
+            Press(editor, Key.Escape);
+            Assert.False(searchBar.IsVisible);
+            Assert.True(editor.IsVisible);
+            text.Focus();
+            text.CaretIndex = text.Text.Length;
+            editor.KeyTextInput("!");
+            Assert.EndsWith("!", text.Text);
+            Press(editor, Key.Z, RawInputModifiers.Control);
+            Dispatcher.UIThread.RunJobs();
+            Assert.False(text.Text!.EndsWith('!'));
+            Press(editor, Key.Y, RawInputModifiers.Control);
+            Dispatcher.UIThread.RunJobs();
+            Assert.EndsWith("!", text.Text);
+            Press(editor, Key.S, RawInputModifiers.Control);
+            await WaitUntil(() => File.ReadAllText(path).EndsWith('!'));
+            Assert.False(editor.IsDirty);
+            Assert.Contains(editor.GetVisualDescendants().OfType<TextBlock>(), block => block.Text == "Saved.");
+            Assert.Equal("alpha beta alpha\nsecond!", File.ReadAllText(path).Replace("\r\n", "\n"));
+            Press(editor, Key.Escape);
+            await WaitUntil(() => left.IsEnabled && !window.OwnedWindows.Any());
+            Assert.Contains(window.GetVisualDescendants().OfType<TextBlock>(), block => block.Text == "Saved: notes.txt");
+        }
+        finally { await Close(window); }
+    }
+
+    [AvaloniaFact]
+    public async Task ClosingADirtyEditorAsksToSaveDiscardOrCancel()
+    {
+        using var temp = new ScratchDirectory();
+        var path = temp.File("left/notes.txt", "keep");
+        var (window, left, _, _) = await Open(temp);
+        try
+        {
+            await left.NavigateAsync(left.CurrentPath, path); left.FocusList(); Dispatcher.UIThread.RunJobs();
+            Press(window, Key.F4);
+            await WaitUntil(() => window.OwnedWindows.OfType<TextEditorWindow>().Any());
+            var editor = (TextEditorWindow)window.OwnedWindows.Single();
+            var text = editor.GetVisualDescendants().OfType<TextBox>().Single(box => box.Name == "EditorText");
+            text.Text = "keep!";
+            Press(editor, Key.Escape);
+            await WaitUntil(() => editor.OwnedWindows.Any());
+            var dialog = editor.OwnedWindows.Single();
+            Assert.Contains("Save", dialog.Title);
+            Assert.Equal("Save, Don't Save, Cancel", string.Join(", ", dialog.GetVisualDescendants().OfType<Button>().Select(button => button.Content as string).Where(caption => caption is "Save" or "Don't Save" or "Cancel")));
+            Click(dialog, "Cancel");
+            await WaitUntil(() => !editor.OwnedWindows.Any());
+            Assert.True(editor.IsVisible);
+            Assert.Equal("keep!", text.Text);
+            Assert.Equal("keep", File.ReadAllText(path));
+            Press(editor, Key.Escape);
+            await WaitUntil(() => editor.OwnedWindows.Any());
+            Click(editor.OwnedWindows.Single(), "Don't Save");
+            await WaitUntil(() => left.IsEnabled && !window.OwnedWindows.Any());
+            Assert.Equal("keep", File.ReadAllText(path));
+            Press(window, Key.F4);
+            await WaitUntil(() => window.OwnedWindows.OfType<TextEditorWindow>().Any());
+            editor = (TextEditorWindow)window.OwnedWindows.Single();
+            editor.GetVisualDescendants().OfType<TextBox>().Single(box => box.Name == "EditorText").Text = "saved";
+            Press(editor, Key.Escape);
+            await WaitUntil(() => editor.OwnedWindows.Any());
+            Click(editor.OwnedWindows.Single(), "Save");
+            await WaitUntil(() => left.IsEnabled && File.ReadAllText(path) == "saved");
+            Assert.Empty(window.OwnedWindows);
+        }
+        finally { await Close(window); }
+    }
+
+    [AvaloniaFact]
+    public async Task FailedSaveKeepsTheTextAndTheDirtyState()
+    {
+        using var temp = new ScratchDirectory();
+        var path = temp.File("left/notes.txt", "keep");
+        var (window, left, _, _) = await Open(temp, provider: new RejectingWriter(new LocalFileSystemProvider()));
+        try
+        {
+            await left.NavigateAsync(left.CurrentPath, path); left.FocusList(); Dispatcher.UIThread.RunJobs();
+            Press(window, Key.F4);
+            await WaitUntil(() => window.OwnedWindows.OfType<TextEditorWindow>().Any());
+            var editor = (TextEditorWindow)window.OwnedWindows.Single();
+            var text = editor.GetVisualDescendants().OfType<TextBox>().Single(box => box.Name == "EditorText");
+            text.Text = "keep more";
+            Press(editor, Key.S, RawInputModifiers.Control);
+            await WaitUntil(() => editor.GetVisualDescendants().OfType<TextBlock>().Any(block => block.Text == "The disk is full."));
+            Assert.True(editor.IsDirty);
+            Assert.Equal("keep more", text.Text);
+            Assert.Equal("keep", File.ReadAllText(path));
+            Press(editor, Key.Escape);
+            await WaitUntil(() => editor.OwnedWindows.Any());
+            Click(editor.OwnedWindows.Single(), "Don't Save");
+            await WaitUntil(() => left.IsEnabled);
+        }
+        finally { await Close(window); }
+    }
+
+    [AvaloniaFact]
+    public async Task ShiftF4CreatesAFileAndOpensItInTheEditor()
+    {
+        using var temp = new ScratchDirectory();
+        var (window, left, _, _) = await Open(temp);
+        try
+        {
+            left.FocusList(); Dispatcher.UIThread.RunJobs();
+            Press(window, Key.F4, RawInputModifiers.Shift);
+            await WaitUntil(() => window.OwnedWindows.Any());
+            var dialog = window.OwnedWindows.Single();
+            Assert.Equal("New file", dialog.Title);
+            Press(dialog, Key.Escape);
+            await WaitUntil(() => left.IsEnabled);
+            Assert.Empty(Directory.GetFiles(left.CurrentPath));
+            Press(window, Key.F4, RawInputModifiers.Shift);
+            await WaitUntil(() => window.OwnedWindows.Any());
+            window.OwnedWindows.Single().KeyTextInput("notes.txt");
+            Press(window.OwnedWindows.Single(), Key.Enter);
+            await WaitUntil(() => window.OwnedWindows.OfType<TextEditorWindow>().Any());
+            var created = Path.Combine(left.CurrentPath, "notes.txt");
+            Assert.True(File.Exists(created));
+            Assert.Empty(await File.ReadAllTextAsync(created));
+            var editor = Assert.IsType<TextEditorWindow>(window.OwnedWindows.Single());
+            Assert.Equal("", editor.GetVisualDescendants().OfType<TextBox>().Single(box => box.Name == "EditorText").Text);
+            Press(editor, Key.Escape);
+            await WaitUntil(() => left.IsEnabled && !window.OwnedWindows.Any());
+            Assert.Equal(created, left.CurrentEntry!.FullPath);
+        }
+        finally { await Close(window); }
+    }
+
+    [AvaloniaFact]
+    public async Task F4OpensUnsuitableFilesWithTheSystemAndKeepsReadOnlyTextClosed()
+    {
+        using var temp = new ScratchDirectory();
+        var binary = temp.File("left/data.bin", "\0\u0001binary");
+        var launcher = new RecordingLauncher();
+        var (window, left, _, _) = await Open(temp, launcher: launcher);
+        try
+        {
+            await left.NavigateAsync(left.CurrentPath, binary); left.FocusList(); Dispatcher.UIThread.RunJobs();
+            Press(window, Key.F4);
+            await WaitUntil(() => left.IsEnabled && launcher.Opened.Count == 1);
+            Assert.Equal(binary, launcher.Opened[0]);
+            Assert.Empty(window.OwnedWindows);
+            Assert.Empty(launcher.Edited);
+            var huge = temp.File("left/huge.txt", new string('a', TextDocuments.MaxEditBytes + 1));
+            await left.NavigateAsync(left.CurrentPath, huge); left.FocusList(); Dispatcher.UIThread.RunJobs();
+            Press(window, Key.F4);
+            await WaitUntil(() => left.IsEnabled && launcher.Opened.Count == 2);
+            Assert.Equal(huge, launcher.Opened[1]);
+            Assert.Empty(window.OwnedWindows);
+            Assert.Equal(TextDocuments.MaxEditBytes + 1, new FileInfo(huge).Length);
+        }
+        finally { await Close(window); }
+
+        var readable = temp.File("left/plain.txt", "visible");
+        var (readOnlyWindow, readOnlyPane, _, _) = await Open(temp, provider: new ReadOnlyFiles(new LocalFileSystemProvider()));
+        try
+        {
+            await readOnlyPane.NavigateAsync(readOnlyPane.CurrentPath, readable); readOnlyPane.FocusList(); Dispatcher.UIThread.RunJobs();
+            Press(readOnlyWindow, Key.F3);
+            await WaitUntil(() => readOnlyWindow.OwnedWindows.OfType<TextViewerWindow>().Any());
+            Press(readOnlyWindow.OwnedWindows.Single(), Key.Escape);
+            await WaitUntil(() => readOnlyPane.IsEnabled);
+            Press(readOnlyWindow, Key.F4);
+            await WaitUntil(() => readOnlyPane.IsEnabled && readOnlyWindow.GetVisualDescendants().OfType<TextBlock>().Any(block => block.Text?.Contains("cannot edit") == true));
+            Assert.Empty(readOnlyWindow.OwnedWindows);
+            Assert.Equal("visible", File.ReadAllText(readable));
+        }
+        finally { await Close(readOnlyWindow); }
+    }
+
+    [AvaloniaFact]
+    public async Task EditorSavesTheSelectedEncodingAndDoesNotReloadOverEdits()
+    {
+        using var temp = new ScratchDirectory();
+        var path = temp.File("left/page.txt", "ą");
+        var (window, left, _, _) = await Open(temp);
+        try
+        {
+            await left.NavigateAsync(left.CurrentPath, path); left.FocusList(); Dispatcher.UIThread.RunJobs();
+            Press(window, Key.F4);
+            await WaitUntil(() => window.OwnedWindows.OfType<TextEditorWindow>().Any());
+            var editor = (TextEditorWindow)window.OwnedWindows.Single();
+            var text = editor.GetVisualDescendants().OfType<TextBox>().Single(box => box.Name == "EditorText");
+            text.Text += "x";
+            Click(editor, "Reload");
+            Assert.EndsWith("x", text.Text);
+            Assert.Contains(editor.GetVisualDescendants().OfType<TextBlock>(), block => block.Text?.Contains("discard") == true);
+            text.Text = "ą";
+            editor.GetVisualDescendants().OfType<ComboBox>().Single(box => box.Name == "Encoding").SelectedItem =
+                TextDocuments.Encodings.Single(choice => choice.Id == "windows-1250");
+            Press(editor, Key.S, RawInputModifiers.Control);
+            await WaitUntil(() => !editor.IsDirty);
+            Assert.Equal(TextDocuments.Encode("ą", "windows-1250", "\n"), File.ReadAllBytes(path));
+            var document = TextDocuments.Decode(File.ReadAllBytes(path), encodingId: "windows-1250");
+            Assert.Equal("ą", document.Text);
+        }
+        finally { await Close(window); }
+    }
+
+    [AvaloniaFact]
+    public async Task BuiltInEditorSavesThroughARemoteProvider()
+    {
+        var remote = new MemorySftp();
+        remote.AddDirectory("/");
+        remote.AddFile("/notes.txt", "hello");
+        using var provider = new SftpFileSystemProvider(remote, "box", "Box", "/");
+        var owner = new Window { Width = 800, Height = 600 };
+        owner.Show();
+        try
+        {
+            var path = provider.NormalizePath("sftp://box/notes.txt");
+            var document = await TextDocuments.ReadAsync(provider, path, TextDocuments.MaxEditBytes, false);
+            var entry = (await provider.GetEntryAsync(path))!;
+            var editor = new TextEditorWindow(owner, entry, provider, document);
+            editor.Show();
+            Dispatcher.UIThread.RunJobs();
+            var text = editor.GetVisualDescendants().OfType<TextBox>().Single(box => box.Name == "EditorText");
+            text.Text = "hello!";
+            Press(editor, Key.S, RawInputModifiers.Control);
+            await WaitUntil(() => remote.ReadFile("/notes.txt") == "hello!" && !editor.IsDirty);
+            Assert.Contains(editor.GetVisualDescendants().OfType<TextBlock>(), block => block.Text == "Saved.");
+            editor.Close();
+        }
+        finally { owner.Close(); }
+    }
+
+    [AvaloniaFact]
+    public async Task SecondCopyWaitsAndDeleteCanBeConfirmedWhileItRuns()
     {
         using var temp = new ScratchDirectory();
         var first = temp.File("left/a.txt", "one");
@@ -1231,9 +1888,10 @@ public sealed class WindowTests
             await WaitUntil(() => window.WaitingTransfers == 1 && left.IsEnabled);
             Assert.Equal(1, provider.Transfers);
             Press(window, Key.F8);
-            await WaitUntil(() => window.GetVisualDescendants().OfType<TextBlock>().Any(block =>
-                block.Text?.Contains("still queued", StringComparison.Ordinal) == true));
-            Assert.Empty(window.OwnedWindows);
+            await WaitUntil(() => window.OwnedWindows.Any());
+            Assert.Equal("Delete permanently", window.OwnedWindows.Single().Title);
+            Press(window.OwnedWindows.Single(), Key.Escape);
+            await WaitUntil(() => left.IsEnabled && window.WaitingTransfers == 1);
             Assert.True(File.Exists(first));
             window.GetVisualDescendants().OfType<Button>().Single(button => button.Name == "RemoveQueuedTransfer")
                 .RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
@@ -1290,6 +1948,54 @@ public sealed class WindowTests
         }
         public Task EditAsync(string path, string? editorExecutable, CancellationToken cancellationToken = default)
         { Edited.Add((path, editorExecutable)); return Task.CompletedTask; }
+    }
+
+    private sealed class RejectingWriter(IFileSystemProvider inner) : IFileSystemProvider
+    {
+        public string Id => inner.Id;
+        public string DisplayName => inner.DisplayName;
+        public bool SupportsRecycle => inner.SupportsRecycle;
+        public bool CanWriteFileContent => true;
+        public StringComparer PathComparer => inner.PathComparer;
+        public bool CanHandle(string path) => inner.CanHandle(path);
+        public string NormalizePath(string path) => inner.NormalizePath(path);
+        public string CombinePath(string directory, string name) => inner.CombinePath(directory, name);
+        public bool IsSameOrDescendant(string path, string ancestor) => inner.IsSameOrDescendant(path, ancestor);
+        public Task<IReadOnlyList<LocationEntry>> GetLocationsAsync(CancellationToken cancellationToken = default) => inner.GetLocationsAsync(cancellationToken);
+        public Task<IReadOnlyList<FileEntry>> ListAsync(string path, CancellationToken cancellationToken = default) => inner.ListAsync(path, cancellationToken);
+        public Task<FileEntry?> GetEntryAsync(string path, CancellationToken cancellationToken = default) => inner.GetEntryAsync(path, cancellationToken);
+        public Task CreateDirectoryAsync(string path, CancellationToken cancellationToken = default) => inner.CreateDirectoryAsync(path, cancellationToken);
+        public Task DeleteAsync(string path, DeleteMode mode, CancellationToken cancellationToken = default) => inner.DeleteAsync(path, mode, cancellationToken);
+        public Task RemoveEmptyDirectoryAsync(string path, CancellationToken cancellationToken = default) => inner.RemoveEmptyDirectoryAsync(path, cancellationToken);
+        public Task CopyFileAsync(string source, string target, bool overwrite, CancellationToken cancellationToken = default) => inner.CopyFileAsync(source, target, overwrite, cancellationToken);
+        public Task MoveFileAsync(string source, string target, bool overwrite, CancellationToken cancellationToken = default) => inner.MoveFileAsync(source, target, overwrite, cancellationToken);
+        public Task<Stream> OpenReadAsync(string path, CancellationToken cancellationToken = default) => inner.OpenReadAsync(path, cancellationToken);
+        public Task<string?> GetLocalFilePathAsync(string path, CancellationToken cancellationToken = default) => inner.GetLocalFilePathAsync(path, cancellationToken);
+        public Task WriteFileAsync(string destinationPath, Stream content, bool overwrite, IProgress<long>? bytesCopied, CancellationToken cancellationToken = default) =>
+            Task.FromException(new IOException("The disk is full."));
+    }
+
+    private sealed class ReadOnlyFiles(IFileSystemProvider inner) : IFileSystemProvider
+    {
+        public string Id => inner.Id;
+        public string DisplayName => inner.DisplayName;
+        public bool SupportsRecycle => inner.SupportsRecycle;
+        public bool CanWriteFileContent => false;
+        public StringComparer PathComparer => inner.PathComparer;
+        public bool CanHandle(string path) => inner.CanHandle(path);
+        public string NormalizePath(string path) => inner.NormalizePath(path);
+        public string CombinePath(string directory, string name) => inner.CombinePath(directory, name);
+        public bool IsSameOrDescendant(string path, string ancestor) => inner.IsSameOrDescendant(path, ancestor);
+        public Task<IReadOnlyList<LocationEntry>> GetLocationsAsync(CancellationToken cancellationToken = default) => inner.GetLocationsAsync(cancellationToken);
+        public Task<IReadOnlyList<FileEntry>> ListAsync(string path, CancellationToken cancellationToken = default) => inner.ListAsync(path, cancellationToken);
+        public Task<FileEntry?> GetEntryAsync(string path, CancellationToken cancellationToken = default) => inner.GetEntryAsync(path, cancellationToken);
+        public Task CreateDirectoryAsync(string path, CancellationToken cancellationToken = default) => inner.CreateDirectoryAsync(path, cancellationToken);
+        public Task DeleteAsync(string path, DeleteMode mode, CancellationToken cancellationToken = default) => inner.DeleteAsync(path, mode, cancellationToken);
+        public Task RemoveEmptyDirectoryAsync(string path, CancellationToken cancellationToken = default) => inner.RemoveEmptyDirectoryAsync(path, cancellationToken);
+        public Task CopyFileAsync(string source, string target, bool overwrite, CancellationToken cancellationToken = default) => inner.CopyFileAsync(source, target, overwrite, cancellationToken);
+        public Task MoveFileAsync(string source, string target, bool overwrite, CancellationToken cancellationToken = default) => inner.MoveFileAsync(source, target, overwrite, cancellationToken);
+        public Task<Stream> OpenReadAsync(string path, CancellationToken cancellationToken = default) => inner.OpenReadAsync(path, cancellationToken);
+        public Task<string?> GetLocalFilePathAsync(string path, CancellationToken cancellationToken = default) => inner.GetLocalFilePathAsync(path, cancellationToken);
     }
 
     private sealed class RecordingTrash : ITrashService

@@ -9,6 +9,7 @@ internal sealed class FixedLocationsProvider(IFileSystemProvider inner,
     public string Id => inner.Id;
     public string DisplayName => inner.DisplayName;
     public bool SupportsRecycle => inner.SupportsRecycle;
+    public bool CanWriteFileContent => inner.CanWriteFileContent;
     public bool SupportsLocalFileDrop => inner.SupportsLocalFileDrop;
     public StringComparer PathComparer => inner.PathComparer;
     public bool CanHandle(string path) => inner.CanHandle(path);
@@ -28,6 +29,7 @@ internal sealed class FixedLocationsProvider(IFileSystemProvider inner,
     public Task<bool> TryMoveDirectoryAsync(string source, string target, CancellationToken cancellationToken = default) => inner.TryMoveDirectoryAsync(source, target, cancellationToken);
     public Task TransferFileAsync(string source, string target, bool overwrite, bool move, IProgress<long>? progress, CancellationToken cancellationToken = default) => inner.TransferFileAsync(source, target, overwrite, move, progress, cancellationToken);
     public Task<Stream> OpenReadAsync(string path, CancellationToken cancellationToken = default) => inner.OpenReadAsync(path, cancellationToken);
+    public Task WriteFileAsync(string destinationPath, Stream content, bool overwrite, IProgress<long>? bytesCopied, CancellationToken cancellationToken = default) => inner.WriteFileAsync(destinationPath, content, overwrite, bytesCopied, cancellationToken);
     public Task<string?> GetLocalFilePathAsync(string path, CancellationToken cancellationToken = default) => inner.GetLocalFilePathAsync(path, cancellationToken);
     public Task<string> RenameAsync(string path, string name, CancellationToken cancellationToken = default) => inner.RenameAsync(path, name, cancellationToken);
 }

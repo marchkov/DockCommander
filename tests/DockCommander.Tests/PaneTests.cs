@@ -74,6 +74,13 @@ public sealed class PaneTests
         Assert.True(destination.CanAcceptDrop(payload, temp.Folder("target")));
         destination.IsEnabled = false;
         Assert.False(destination.CanAcceptDrop(payload, temp.Folder("target")));
+        var remote = new MemorySftp();
+        remote.AddDirectory("/");
+        var remoteProvider = new SftpFileSystemProvider(remote, "nas", "NAS", "/");
+        var remotePane = new FilePane(remoteProvider, remoteProvider.NormalizePath("/"));
+        Assert.True(remotePane.CanAcceptDrop(payload, remoteProvider.NormalizePath("/incoming")));
+        Assert.False(remotePane.CanAcceptDrop(new FilePane.DraggedEntries(remotePane, payload.Entries), remoteProvider.NormalizePath("/incoming")));
+        remoteProvider.Dispose();
     }
 
     [AvaloniaFact]

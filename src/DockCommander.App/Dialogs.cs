@@ -153,9 +153,13 @@ internal static class Dialogs
     public static async Task<ConnectionEditResult?> EditConnectionAsync(Window owner, ConnectionProfile? existing)
     {
         var (window, body, buttons) = Create(owner, existing is null ? "Add connection" : "Edit connection",
-            "The password is asked on Connect unless you choose to remember it. A remembered password or private key is encrypted for this user account.");
+            "The password is asked on Connect unless you choose to remember it. A remembered password or private key is encrypted for this user account. For WebDAV, choose a type and the server URL; Nextcloud and ownCloud paths are filled in automatically.");
         var name = Field("Name", existing?.Name ?? "");
         var protocol = new ComboBox { ItemsSource = ConnectionProtocols.All, SelectedItem = existing?.Protocol ?? ConnectionProtocols.Sftp };
+        var webDavType = new ComboBox { Name = "WebDavType", ItemsSource = WebDavPresets.All, SelectedItem = WebDavPresets.IsKnown(existing?.WebDavPreset) ? existing!.WebDavPreset : WebDavPresets.Generic };
+        var serverUrl = Field("Server URL", existing?.Protocol == ConnectionProtocols.WebDav
+            ? (string.IsNullOrWhiteSpace(existing.ServerUrl) ? WebDavLocations.FromLegacy(existing) : existing.ServerUrl) : "");
+        serverUrl.Name = "ServerUrl";
         var host = Field("Host", existing?.Host ?? "");
         var port = Field("Port", existing?.Port?.ToString() ?? ConnectionProtocols.DefaultPort(existing?.Protocol ?? ConnectionProtocols.Sftp)?.ToString() ?? "");
         var username = Field("Username", existing?.Username ?? "");
@@ -164,23 +168,41 @@ internal static class Dialogs
         var authentication = new ComboBox { ItemsSource = AuthenticationKinds.All, SelectedItem = existing?.Authentication ?? AuthenticationKinds.Password };
         var error = new TextBlock { TextWrapping = TextWrapping.Wrap };
         error.Classes.Add("muted");
+        var typeRow = Row("Type", webDavType);
+        var serverRow = Row("Server URL", serverUrl);
+        var hostRow = Row("Host", host);
+        var portRow = Row("Port", port);
+        var pathRow = Row("Initial path", initialPath);
         string? previousDefault = port.Text;
+        void ShowWebDav(bool webDav)
+        {
+            typeRow.IsVisible = serverRow.IsVisible = webDav;
+            hostRow.IsVisible = portRow.IsVisible = pathRow.IsVisible = !webDav;
+            serverUrl.PlaceholderText = WebDavPresets.Example(webDavType.SelectedItem as string);
+            if (webDav && authentication.SelectedItem as string == AuthenticationKinds.PrivateKey)
+                authentication.SelectedItem = AuthenticationKinds.Password;
+        }
         protocol.SelectionChanged += (_, _) =>
         {
             var next = ConnectionProtocols.DefaultPort(protocol.SelectedItem as string ?? "")?.ToString() ?? "";
             if (string.IsNullOrWhiteSpace(port.Text) || port.Text == previousDefault) port.Text = next;
             previousDefault = next;
+            ShowWebDav(protocol.SelectedItem as string == ConnectionProtocols.WebDav);
         };
+        webDavType.SelectionChanged += (_, _) => serverUrl.PlaceholderText = WebDavPresets.Example(webDavType.SelectedItem as string);
         foreach (var (caption, control) in new (string, Control)[]
         {
-            ("Name", name), ("Protocol", protocol), ("Host", host), ("Port", port),
-            ("Username", username), ("Initial path", initialPath), ("Authentication", authentication)
+            ("Name", name), ("Protocol", protocol)
         })
-        {
-            body.Children.Add(new TextBlock { Text = caption, FontSize = 12 });
-            ((TextBlock)body.Children[^1]).Classes.Add("muted");
-            body.Children.Add(control);
-        }
+            body.Children.Add(Row(caption, control));
+        body.Children.Add(typeRow);
+        body.Children.Add(serverRow);
+        body.Children.Add(hostRow);
+        body.Children.Add(portRow);
+        body.Children.Add(Row("Username", username));
+        body.Children.Add(pathRow);
+        body.Children.Add(Row("Authentication", authentication));
+        ShowWebDav(protocol.SelectedItem as string == ConnectionProtocols.WebDav);
         body.Children.Add(error);
         var save = new Button { Content = "Save", IsDefault = true, MinWidth = 90 };
         save.Classes.Add("primary");
@@ -188,14 +210,32 @@ internal static class Dialogs
         cancel.Click += (_, _) => window.Close(null);
         save.Click += (_, _) =>
         {
+            var protocolName = protocol.SelectedItem as string ?? "";
+            var webDav = protocolName == ConnectionProtocols.WebDav;
             int? portValue = null;
-            if (!string.IsNullOrWhiteSpace(port.Text))
+            var hostName = (host.Text ?? "").Trim();
+            string? preset = null;
+            string? storedUrl = null;
+            var initial = initialPath.Text ?? "";
+            if (webDav)
+            {
+                preset = webDavType.SelectedItem as string ?? WebDavPresets.Generic;
+                storedUrl = WebDavLocations.NormalizedServerUrl(serverUrl.Text ?? "");
+                var draft = new ConnectionProfile("check", "check", protocolName, "pending", Username: username.Text ?? "",
+                    Authentication: authentication.SelectedItem as string ?? "", WebDavPreset: preset, ServerUrl: storedUrl);
+                if (WebDavLocations.TryResolve(draft, false, out var location, out var urlError))
+                {
+                    hostName = location.Host;
+                    portValue = location.StoredPort;
+                    initial = "";
+                }
+                else { error.Text = urlError ?? "Enter the server URL."; return; }
+            }
+            else if (!string.IsNullOrWhiteSpace(port.Text))
             {
                 if (!int.TryParse(port.Text, out var parsed)) { error.Text = "Port must be between 1 and 65535."; return; }
                 portValue = parsed;
             }
-            var protocolName = protocol.SelectedItem as string ?? "";
-            var hostName = (host.Text ?? "").Trim();
             var sameServer = existing is not null
                 && string.Equals(existing.Protocol, protocolName, StringComparison.OrdinalIgnoreCase)
                 && string.Equals(existing.Host, hostName, StringComparison.OrdinalIgnoreCase)
@@ -204,12 +244,14 @@ internal static class Dialogs
                 existing?.Id ?? Guid.NewGuid().ToString("n"),
                 name.Text ?? "",
                 protocolName,
-                host.Text ?? "",
+                hostName,
                 portValue,
                 username.Text ?? "",
-                initialPath.Text ?? "",
+                initial,
                 authentication.SelectedItem as string ?? "",
-                sameServer ? existing!.HostFingerprint : null).Normalized();
+                sameServer ? existing!.HostFingerprint : null,
+                preset,
+                webDav ? storedUrl : null).Normalized();
             if (ConnectionProfile.Validate(profile) is { } message) { error.Text = message; return; }
             window.Close(new ConnectionEditResult(profile, false));
         };
@@ -228,6 +270,13 @@ internal static class Dialogs
         window.KeyDown += (_, e) => { if (e.Key == Key.Escape) { e.Handled = true; window.Close(null); } };
         window.Opened += (_, _) => { name.Focus(); name.SelectAll(); };
         return await window.ShowDialog<ConnectionEditResult?>(owner);
+
+        static StackPanel Row(string caption, Control control)
+        {
+            var label = new TextBlock { Text = caption, FontSize = 12 };
+            label.Classes.Add("muted");
+            return new StackPanel { Spacing = 16, Children = { label, control } };
+        }
     }
 
     private static TextBox Field(string name, string value)
@@ -235,6 +284,24 @@ internal static class Dialogs
         var box = new TextBox { Name = name.Replace(" ", ""), Text = value };
         box.Classes.Add("path-field");
         return box;
+    }
+
+    public static async Task<SaveChoice> AskSaveAsync(Window owner, string name)
+    {
+        var (window, body, buttons) = Create(owner, $"Save changes to {name}?", "This file has unsaved changes.");
+        var result = SaveChoice.Cancel;
+        var save = new Button { Name = "SaveChanges", Content = "Save", IsDefault = true, MinWidth = 90 };
+        save.Classes.Add("primary");
+        var discard = new Button { Name = "DiscardChanges", Content = "Don't Save", MinWidth = 90 };
+        var cancel = new Button { Name = "CancelClose", Content = "Cancel", IsCancel = true, MinWidth = 90 };
+        save.Click += (_, _) => { result = SaveChoice.Save; window.Close(); };
+        discard.Click += (_, _) => { result = SaveChoice.Discard; window.Close(); };
+        cancel.Click += (_, _) => window.Close();
+        buttons.Children.Add(save); buttons.Children.Add(discard); buttons.Children.Add(cancel); body.Children.Add(buttons);
+        window.KeyDown += (_, e) => { if (e.Key == Key.Escape) { e.Handled = true; window.Close(); } };
+        window.Opened += (_, _) => save.Focus();
+        await window.ShowDialog(owner);
+        return result;
     }
 
     public static async Task<bool> ConfirmAsync(Window owner, string title, string message, string accept)
@@ -287,3 +354,5 @@ internal static class Dialogs
 }
 
 internal sealed record ConnectionEditResult(ConnectionProfile? Profile, bool Removed);
+
+internal enum SaveChoice { Save, Discard, Cancel }

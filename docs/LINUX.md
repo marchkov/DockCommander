@@ -29,7 +29,9 @@ If copying the folder from Windows instead of extracting the archive, first run
 `chmod +x DC`. A locally installed .NET runtime may require `DOTNET_ROOT` to point
 to its installation directory. `dotnet DC.dll` also works.
 
-F4 needs an editor configured with Shift+F4: enter an installed GUI editor executable,
+F4 edits a text file inside DockCommander. A file that is not text opens with its system application.
+Shift+F4 creates a file in the current folder. The external editor is on the file menu.
+Configure that editor with Ctrl+Shift+F4: enter an installed GUI editor executable,
 without arguments or surrounding quotes. Enter uses the desktop file association.
 Alt+F1/F2 can be intercepted by the desktop environment; drive buttons remain available.
 

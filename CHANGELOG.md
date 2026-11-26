@@ -2,9 +2,19 @@
 
 ## Unreleased
 
-- An open remote session is shared. Switching the other pane to Remote attaches that connection, so both panes can browse it. A remembered password or private key is encrypted for this user account. A failed connection asks for those sign-in details again. The server key or certificate is confirmed once per connection and asked again only if it changes.
+- Double-click a saved connection to connect. The Edit and Connect buttons keep their own actions.
+- A remote session can be disconnected without deleting its profile. The name stays visible as Disconnected and reconnects with the saved sign-in. Forget sign-in removes only the saved password or key. A connection the server closes becomes Disconnected.
+- Shift+F4 creates a file in the current folder and opens it in the editor. The same command is on the right-click menu. F4 opens a file that is not text, or is too large to edit, with the system application when that file has a local path.
+- F4 opens the built-in text editor. F3 still only views a file. Ctrl+Shift+F4 chooses the external editor, and the file menu opens the current file in it.
+  The built-in editor saves through the file provider, including a remote connection, and keeps unsaved text when a save fails.
+- WebDAV is one provider. A connection type of Nextcloud, ownCloud, Synology, QNAP, or Generic only fills in the server address. Nextcloud and ownCloud add the DAV path for the user, including when the server is installed in a subdirectory. ownCloud falls back to the classic `/remote.php/webdav/` path when the modern one is missing. Saved profiles without a type keep their host and initial path.
+- F8 on a remote connection asks to delete permanently, because that connection has no recycle bin.
+- Delete, rename, and new folder can run while a copy or move is still transferring.
+- Drag between panes works from Local to Remote, Remote to Local, and between two remote connections. Files dropped from Explorer onto a remote pane are copied there.
+- An open remote session stays available to both panes. Another connection opens beside it, newest on the left, and each pane can show a different one. Right-click a connection name to reconnect, edit, or close it. A remembered password or private key is encrypted for this user account. A failed connection asks for those sign-in details again. The server key or certificate is confirmed once per connection and asked again only if it changes.
 - A connected pane keeps its session when switched to Local and back to Remote. A plus button beside the connection opens the saved connections without disconnecting.
-- FTP and FTPS open in the pane that requested them. FTPS uses explicit TLS, or implicit TLS on port 990. Anonymous FTP does not ask for one. WebDAV is still not connected.
+- FTP and FTPS open in the pane that requested them. FTPS uses explicit TLS, or implicit TLS on port 990. Anonymous FTP does not ask for one.
+- WebDAV opens in the pane that requested it. HTTPS is the default, and port 80 stays plain HTTP. Password authentication uses Basic, then Digest when the server asks for it. The certificate follows the same remembered trust as FTPS. Put the collection path, such as `/remote.php/dav/files/user` for Nextcloud, in Initial path.
 - SFTP opens in the pane that requested it. Copy and move use the existing queue.
 - Copy and move can run between two different file-system providers through the same queue.
   The pane can replace its provider without a separate window.

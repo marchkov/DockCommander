@@ -71,6 +71,20 @@ public sealed class SftpProviderTests
     }
 
     [Fact]
+    public async Task CreateFileWritesAnEmptyFileAndRefusesADuplicateName()
+    {
+        var remote = new MemorySftp();
+        remote.AddDirectory("/");
+        using var provider = new SftpFileSystemProvider(remote, "box", "Box", "/");
+        var service = new FileOperationService();
+        var path = await service.CreateFileAsync(provider, "/", "notes.txt");
+        Assert.Equal("/notes.txt", provider.DisplayPath(path));
+        Assert.Empty(remote.ReadFile("/notes.txt"));
+        await Assert.ThrowsAsync<IOException>(() => service.CreateFileAsync(provider, "/", "notes.txt"));
+        Assert.Empty(remote.ReadFile("/notes.txt"));
+    }
+
+    [Fact]
     public void FtpsUsesExplicitTlsUnlessThePortIs990()
     {
         Assert.Equal(FtpEncryptionMode.None, FluentFtpRemote.Encryption(ConnectionProtocols.Ftp, 21));
@@ -95,8 +109,11 @@ internal sealed class MemorySftp : ISftpRemote
 
     public string ReadFile(string path) => System.Text.Encoding.UTF8.GetString(_nodes[Clean(path)].Content!);
 
+    public bool FailClosed { get; set; }
+
     public IReadOnlyList<SftpRemoteEntry> List(string path, CancellationToken cancellationToken)
     {
+        if (FailClosed) throw new IOException("The SFTP connection closed.");
         path = Clean(path);
         if (!_nodes.TryGetValue(path, out var node) || !node.Directory) throw new IOException("The folder is not there.");
         var prefix = path == "/" ? "/" : path + "/";

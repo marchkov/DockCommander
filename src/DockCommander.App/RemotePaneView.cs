@@ -1,8 +1,10 @@
 using Avalonia;
 using Avalonia.Controls;
 using Avalonia.Controls.Templates;
+using Avalonia.Input;
 using Avalonia.Layout;
 using Avalonia.Media;
+using Avalonia.VisualTree;
 using DockCommander.Core.Connections;
 
 namespace DockCommander.App;
@@ -13,6 +15,7 @@ internal sealed class RemotePaneView : UserControl
     private readonly ListBox _list = new() { Name = "ConnectionList" };
     private readonly TextBlock _empty = new() { Text = "No saved connections.", FontSize = 13, Margin = new Thickness(4, 12, 0, 0) };
     private IReadOnlyList<ConnectionProfile> _connections = [];
+    private Dictionary<string, SessionLink> _links = new(StringComparer.Ordinal);
 
     public event Action? AddRequested;
     public event Action<ConnectionProfile>? EditRequested;
@@ -40,7 +43,8 @@ internal sealed class RemotePaneView : UserControl
             });
             var detail = new TextBlock
             {
-                Text = profile.Detail, FontSize = 12, TextTrimming = TextTrimming.CharacterEllipsis,
+                Text = profile.Detail + SessionState(profile.Id),
+                FontSize = 12, TextTrimming = TextTrimming.CharacterEllipsis,
                 VerticalAlignment = VerticalAlignment.Center
             };
             detail.Classes.Add("muted");
@@ -67,6 +71,13 @@ internal sealed class RemotePaneView : UserControl
         Grid.SetRow(listHost, 1); body.Children.Add(listHost);
         Content = body;
         _search.TextChanged += (_, _) => ApplyFilter();
+        _list.DoubleTapped += (_, e) =>
+        {
+            if (e.Source is not Visual source) return;
+            if (source is Button || source.GetVisualAncestors().OfType<Button>().Any()) return;
+            var item = source as ListBoxItem ?? source.GetVisualAncestors().OfType<ListBoxItem>().FirstOrDefault();
+            if (item?.DataContext is ConnectionProfile profile) ConnectRequested?.Invoke(profile);
+        };
     }
 
     public void SetConnections(IReadOnlyList<ConnectionProfile> connections)
@@ -74,6 +85,20 @@ internal sealed class RemotePaneView : UserControl
         _connections = connections;
         ApplyFilter();
     }
+
+    public void SetSessionLinks(IReadOnlyDictionary<string, SessionLink> links)
+    {
+        _links = new Dictionary<string, SessionLink>(links, StringComparer.Ordinal);
+        ApplyFilter();
+    }
+
+    private string SessionState(string id) => _links.TryGetValue(id, out var link) ? link switch
+    {
+        SessionLink.Connected => " · Connected",
+        SessionLink.Reconnecting => " · Reconnecting",
+        SessionLink.Disconnected => " · Disconnected",
+        _ => ""
+    } : "";
 
     public void RefreshConnections() => ApplyFilter();
 
@@ -92,6 +117,7 @@ internal sealed class RemotePaneView : UserControl
                 profile.Name.Contains(query, StringComparison.OrdinalIgnoreCase) ||
                 profile.Protocol.Contains(query, StringComparison.OrdinalIgnoreCase) ||
                 profile.Host.Contains(query, StringComparison.OrdinalIgnoreCase) ||
+                (profile.WebDavPreset ?? "").Contains(query, StringComparison.OrdinalIgnoreCase) ||
                 profile.Detail.Contains(query, StringComparison.OrdinalIgnoreCase))).ToArray();
         _list.ItemsSource = visible;
         _empty.IsVisible = visible.Length == 0;

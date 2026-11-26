@@ -25,6 +25,7 @@ public sealed class MainWindow : Window
     private readonly ConnectionStore _connections;
     private readonly SecretStore _secrets;
     private readonly Dictionary<string, IFileSystemProvider> _sessions = new(StringComparer.Ordinal);
+    private readonly List<OpenSessionChip> _open = [];
     private readonly List<IFileSystemProvider> _live = [];
     private readonly Dictionary<string, string> _trusted = new(StringComparer.Ordinal);
     private readonly object _trustLock = new();
@@ -33,6 +34,7 @@ public sealed class MainWindow : Window
     private readonly IExternalFileLauncher _launcher;
     private readonly ISftpConnector _sftp;
     private readonly IFtpConnector _ftp;
+    private readonly IWebDavConnector _webDav;
     private readonly TextPreviewService _textPreview = new();
     private readonly StackPanel _transferPanel = new() { IsVisible = false, Spacing = 5, Margin = new Thickness(0, 8, 0, 0) };
     private readonly StackPanel _queueHost = new() { Spacing = 4 };
@@ -67,7 +69,7 @@ public sealed class MainWindow : Window
         return new LocalFileSystemProvider(trash);
     }
 
-    internal MainWindow(SettingsStore settings, IFileSystemProvider provider, IExternalFileLauncher? launcher = null, ISftpConnector? sftp = null, IFtpConnector? ftp = null)
+    internal MainWindow(SettingsStore settings, IFileSystemProvider provider, IExternalFileLauncher? launcher = null, ISftpConnector? sftp = null, IFtpConnector? ftp = null, IWebDavConnector? webDav = null)
     {
         _settings = settings;
         _connections = ConnectionStore.Beside(settings);
@@ -75,6 +77,7 @@ public sealed class MainWindow : Window
         _launcher = launcher ?? new ExternalFileLauncher();
         _sftp = sftp ?? new SshNetSftpConnector();
         _ftp = ftp ?? new FluentFtpConnector();
+        _webDav = webDav ?? new WebDavConnector();
         _transfers = new(_operations);
         _transfers.Changed += () => Dispatcher.UIThread.Post(UpdateQueuePanel);
         _transfers.JobCompleted = FinishTransferAsync;
@@ -126,9 +129,9 @@ public sealed class MainWindow : Window
             AutomationProperties.SetName(button, $"{key} {label}");
             ToolTip.SetTip(button, key switch
             {
-                "F8" => "F8: recycle · Shift+F8: delete permanently",
+                "F8" => "F8: recycle, or delete permanently when this pane has no recycle bin · Shift+F8: delete permanently",
                 "F6" => "F6: move · Shift+F6: rename current entry",
-                "F4" => "F4: edit current file · Shift+F4: choose editor",
+                "F4" => "F4: edit text, or open another file with its system application · Shift+F4: new file · Ctrl+Shift+F4: choose external editor",
                 _ => $"{key}: {label}"
             });
             button.Click += async (_, _) => await RunAsync(action);
@@ -165,11 +168,25 @@ public sealed class MainWindow : Window
             });
             pane.RemoteWithoutSession += p =>
             {
-                if (TrySharedSession(p, out var provider, out var path))
-                    _ = AttachSharedAsync(p, provider, path);
+                var live = _open.Where(session => session.Link == SessionLink.Connected && session.Provider is not null).ToArray();
+                if (live.Length == 1)
+                    _ = AttachSharedAsync(p, live[0].Provider!, PathForPane(p, live[0].Provider!, Profile(live[0].Id)));
                 else
                     p.ShowConnectionList();
             };
+            pane.SessionChosen += (p, id) =>
+            {
+                if (_sessions.ContainsKey(id)) _ = SwitchSessionAsync(p, id);
+                else _ = ReconnectSessionAsync(p, id);
+            };
+            pane.SessionEditRequested += (pane, id) =>
+            {
+                if (Profile(id) is { } profile) _ = EditConnectionAsync(profile);
+            };
+            pane.SessionReconnectRequested += (p, id) => _ = ReconnectSessionAsync(p, id);
+            pane.SessionDisconnectRequested += (_, id) => DisconnectSession(id);
+            pane.SessionForgetRequested += (source, id) => _ = ForgetSignInAsync(id);
+            pane.SessionCloseRequested += (_, id) => CloseSession(id);
             if (OperatingSystem.IsWindows())
                 pane.SystemMenuRequested += (p, paths, point) => Dispatcher.UIThread.Post(async () =>
                 {
@@ -197,20 +214,22 @@ public sealed class MainWindow : Window
             pane.ExternalDropRequested += async (target, paths, directory) => await RunAsync(async () =>
             {
                 SetActive(target);
+                var source = target.Provider.SupportsLocalFileDrop ? target.Provider : target.LocalProvider;
                 var entries = new List<FileEntry>();
                 foreach (var path in paths)
                 {
-                    var entry = await target.Provider.ResolveDroppedFileAsync(path, _operationCancellation!.Token);
-                    if (!entries.Any(existing => target.Provider.PathComparer.Equals(existing.FullPath, entry.FullPath))) entries.Add(entry);
+                    var entry = await source.ResolveDroppedFileAsync(path, _operationCancellation!.Token);
+                    if (!entries.Any(existing => source.PathComparer.Equals(existing.FullPath, entry.FullPath))) entries.Add(entry);
                 }
                 // A folder already includes any explicitly dropped descendants.
                 var roots = entries.Where(entry => !entries.Any(parent => parent != entry && parent.IsDirectory &&
-                    target.Provider.IsSameOrDescendant(entry.FullPath, parent.FullPath))).ToArray();
+                    source.IsSameOrDescendant(entry.FullPath, parent.FullPath))).ToArray();
                 foreach (var entry in roots)
-                    if (target.Provider.IsSameOrDescendant(target.Provider.CombinePath(directory, entry.Name), entry.FullPath))
+                    if (source.CanHandle(directory) && source.IsSameOrDescendant(source.CombinePath(directory, entry.Name), entry.FullPath))
                         throw new IOException("The destination must not be the source or a folder inside it.");
                 await TransferAsync(false, target, target, roots, directory,
-                    string.Join("\n", roots.Take(5).Select(entry => entry.FullPath)) + (roots.Length > 5 ? "\n…" : ""));
+                    string.Join("\n", roots.Take(5).Select(entry => entry.FullPath)) + (roots.Length > 5 ? "\n…" : ""),
+                    source);
             });
             pane.DropRequested += async (target, payload, directory, move) => await RunAsync(async () =>
             {
@@ -224,6 +243,7 @@ public sealed class MainWindow : Window
                 await RunAsync(action switch
                 {
                     "open" => () => OpenAsync(p), "view" => ViewAsync, "edit" => EditAsync,
+                    "external" => EditExternalAsync, "chooseeditor" => ChooseEditorAsync, "newfile" => CreateFileAsync,
                     "copy" => () => TransferAsync(false), "move" => () => TransferAsync(true),
                     "rename" => RenameAsync, "mkdir" => CreateDirectoryAsync, "recycle" => () => DeleteAsync(false),
                     _ => async () => { await p.LoadLocationsAsync(); await p.NavigateAsync(p.CurrentPath); }
@@ -381,7 +401,7 @@ public sealed class MainWindow : Window
                     _trusted[profile.Id] = profile.HostFingerprint;
         }
         if (_connections.LoadWarning is { } connectionWarning) warnings.Add(connectionWarning);
-        _left.SetConnections(_profiles); _right.SetConnections(_profiles);
+        PublishConnections();
         foreach (var (pane, path) in new[] { (_left, settings.LeftPath), (_right, settings.RightPath) })
         {
             try { await pane.NavigateAsync(path); }
@@ -424,6 +444,7 @@ public sealed class MainWindow : Window
         {
             if (existing is not null)
             {
+                CloseSession(existing.Id);
                 _profiles.RemoveAll(profile => profile.Id == existing.Id);
                 lock (_trustLock) _trusted.Remove(existing.Id);
             }
@@ -439,7 +460,7 @@ public sealed class MainWindow : Window
                 else _trusted[profile.Id] = profile.HostFingerprint;
             }
         }
-        _left.SetConnections(_profiles); _right.SetConnections(_profiles);
+        PublishConnections();
         try
         {
             await _connections.SaveAsync(_profiles);
@@ -463,7 +484,15 @@ public sealed class MainWindow : Window
         _left.IsEnabled = _right.IsEnabled = _keys.IsEnabled = false;
         try { await action(); }
         catch (OperationCanceledException) { SetStatus("Cancelled. Already completed changes are kept."); }
-        catch (Exception ex) { SetStatus($"Error: {ex.Message}"); }
+        catch (Exception ex)
+        {
+            if (IsConnectionClosed(ex))
+            {
+                NoteConnectionClosed();
+                SetStatus($"Disconnected: {ex.Message}");
+            }
+            else SetStatus($"Error: {ex.Message}");
+        }
         finally
         {
             _left.ResetPathText(); _right.ResetPathText();
@@ -481,7 +510,7 @@ public sealed class MainWindow : Window
     private static bool IsFileCommand(KeyEventArgs e) => e.Key switch
     {
         Key.F3 or Key.F5 or Key.F6 or Key.F7 or Key.F8 or Key.Enter or Key.Add or Key.Subtract or Key.Multiply => true,
-        Key.F4 => !e.KeyModifiers.HasFlag(KeyModifiers.Shift),
+        Key.F4 => !(e.KeyModifiers.HasFlag(KeyModifiers.Control) && e.KeyModifiers.HasFlag(KeyModifiers.Shift)),
         Key.F1 or Key.F2 => e.KeyModifiers == KeyModifiers.Alt,
         Key.R => e.KeyModifiers.HasFlag(KeyModifiers.Control),
         _ => false
@@ -518,7 +547,7 @@ public sealed class MainWindow : Window
     {
         if (_sessions.TryGetValue(profile.Id, out var open))
         {
-            await AttachSharedAsync(pane, open, PathFor(open, profile));
+            await AttachSharedAsync(pane, open, PathForPane(pane, open, profile));
             return;
         }
         if (profile.Protocol == ConnectionProtocols.Sftp)
@@ -558,6 +587,29 @@ public sealed class MainWindow : Window
             }
             await ConnectSignedInAsync(pane, profile, (login, token) =>
                 _ftp.ConnectAsync(profile, login, (fingerprint, systemTrusted) => DecideTrust(profile, fingerprint, systemTrusted), token));
+            return;
+        }
+        if (profile.Protocol == ConnectionProtocols.WebDav)
+        {
+            if (profile.Authentication == AuthenticationKinds.PrivateKey)
+            {
+                SetStatus("WebDAV does not support private key authentication.");
+                return;
+            }
+            if (profile.Authentication != AuthenticationKinds.Anonymous && string.IsNullOrWhiteSpace(profile.Username))
+            {
+                SetStatus("Enter a user name for this WebDAV connection.");
+                return;
+            }
+            if (profile.Authentication == AuthenticationKinds.Anonymous)
+            {
+                await OpenSession(pane, profile, token => _webDav.ConnectAsync(profile,
+                    new SftpCredentials(AuthenticationKinds.Anonymous, "", "", ""),
+                    (fingerprint, systemTrusted) => DecideTrust(profile, fingerprint, systemTrusted), token));
+                return;
+            }
+            await ConnectSignedInAsync(pane, profile, (login, token) =>
+                _webDav.ConnectAsync(profile, login, (fingerprint, systemTrusted) => DecideTrust(profile, fingerprint, systemTrusted), token));
             return;
         }
         SetStatus($"{profile.Protocol} is not implemented yet.");
@@ -622,7 +674,9 @@ public sealed class MainWindow : Window
             {
                 pane.OpenRemote(remote);
                 await pane.LoadLocationsAsync();
-                var start = string.IsNullOrWhiteSpace(profile.InitialPath) ? "/" : profile.InitialPath;
+                var remembered = pane.StoredSessionPath(profile.Id);
+                var start = remembered is not null && remote.CanHandle(remembered) ? remembered
+                    : string.IsNullOrWhiteSpace(profile.InitialPath) ? "/" : profile.InitialPath;
                 try
                 {
                     await pane.NavigateAsync(start);
@@ -633,7 +687,7 @@ public sealed class MainWindow : Window
                     await pane.NavigateAsync("/");
                     SetStatus($"Could not open {start}. Showing / instead. {ex.Message}");
                 }
-                TrackSession(profile.Id, remote);
+                TrackSession(profile.Id, profile.Name, remote);
             }
             catch (Exception ex)
             {
@@ -652,34 +706,139 @@ public sealed class MainWindow : Window
         return ran ? result : ConnectResult.Failed;
     }
 
-    private bool TrySharedSession(FilePane pane, out IFileSystemProvider provider, out string path)
+    private string PathForPane(FilePane pane, IFileSystemProvider provider, ConnectionProfile? profile)
     {
-        var other = pane == _left ? _right : _left;
-        if (other.SessionProvider is { } shared)
-        {
-            provider = shared;
-            path = shared.CanHandle(other.SessionPath) ? other.SessionPath : "/";
-            return true;
-        }
-        if (_sessions.Count == 1)
-        {
-            provider = _sessions.Values.First();
-            path = PathFor(provider, null);
-            return true;
-        }
-        provider = null!;
-        path = "/";
-        return false;
+        if (profile is not null && pane.StoredSessionPath(profile.Id) is { } stored && provider.CanHandle(stored))
+            return stored;
+        if (ReferenceEquals(pane.SessionProvider, provider) && provider.CanHandle(pane.SessionPath))
+            return pane.SessionPath;
+        return string.IsNullOrWhiteSpace(profile?.InitialPath) ? "/" : profile.InitialPath;
     }
 
-    private string PathFor(IFileSystemProvider provider, ConnectionProfile? profile)
+    private ConnectionProfile? Profile(string id) => _profiles.FirstOrDefault(profile => profile.Id == id);
+
+    private async Task SwitchSessionAsync(FilePane pane, string id)
+    {
+        if (!_sessions.TryGetValue(id, out var provider)) return;
+        var profile = Profile(id);
+        if (ReferenceEquals(pane.SessionProvider, provider) && !pane.IsRemote && !ReferenceEquals(pane.Provider, pane.LocalProvider))
+            return;
+        await AttachSharedAsync(pane, provider, PathForPane(pane, provider, profile));
+    }
+
+    private async Task ReconnectSessionAsync(FilePane pane, string id)
+    {
+        if (_busy || _saving) return;
+        var profile = Profile(id);
+        if (profile is null) return;
+        if (_open.Any(session => session.Id == id && session.Link == SessionLink.Reconnecting)) return;
+        if (_sessions.ContainsKey(id)) DisconnectSession(id, quiet: true);
+        SetLink(id, SessionLink.Reconnecting);
+        await ConnectAsync(pane, profile);
+        if (_open.Any(session => session.Id == id && session.Link == SessionLink.Reconnecting))
+            SetLink(id, SessionLink.Disconnected);
+    }
+
+    private void DisconnectSession(string id, bool quiet = false)
+    {
+        var chip = _open.FirstOrDefault(session => session.Id == id);
+        if (chip is null || chip.Link == SessionLink.Disconnected && !_sessions.ContainsKey(id)) return;
+        if (_sessions.TryGetValue(id, out var provider))
+        {
+            _sessions.Remove(id);
+            _live.RemoveAll(item => ReferenceEquals(item, provider));
+            _left.DetachSession(provider);
+            _right.DetachSession(provider);
+            try { (provider as IDisposable)?.Dispose(); }
+            catch (Exception) { }
+        }
+        SetLink(id, SessionLink.Disconnected);
+        if (!quiet) SetStatus($"Disconnected: {chip.Name}. The profile is kept.");
+    }
+
+    private async Task ForgetSignInAsync(string id)
+    {
+        var profile = Profile(id);
+        if (profile is null) return;
+        if (!await _secrets.ExistsAsync(id))
+        {
+            SetStatus($"No saved sign-in for {profile.Name}.");
+            return;
+        }
+        if (!await Dialogs.ConfirmAsync(this, "Forget sign-in",
+                $"Forget the saved sign-in for {profile.Name}? The connection profile stays.", "Forget")) return;
+        await _secrets.DeleteAsync(id);
+        SetStatus($"Forgot the saved sign-in for {profile.Name}. The next connection will ask again.");
+    }
+
+    private void CloseSession(string id)
+    {
+        var name = _open.FirstOrDefault(session => session.Id == id)?.Name ?? Profile(id)?.Name ?? id;
+        if (_sessions.TryGetValue(id, out var provider))
+        {
+            _sessions.Remove(id);
+            _live.RemoveAll(item => ReferenceEquals(item, provider));
+            _left.ReleaseSession(provider, id);
+            _right.ReleaseSession(provider, id);
+            try { (provider as IDisposable)?.Dispose(); }
+            catch (Exception) { }
+        }
+        else
+        {
+            _left.ForgetSession(id);
+            _right.ForgetSession(id);
+        }
+        _open.RemoveAll(session => session.Id == id);
+        PublishConnections();
+        SetStatus($"Closed: {name}");
+    }
+
+    private void SetLink(string id, SessionLink link)
+    {
+        var index = _open.FindIndex(session => session.Id == id);
+        if (index < 0) return;
+        var provider = link == SessionLink.Connected ? _open[index].Provider : null;
+        _open[index] = _open[index] with { Link = link, Provider = provider };
+        PublishConnections();
+    }
+
+    private void NoteConnectionClosed()
     {
         foreach (var pane in new[] { _left, _right })
         {
-            if (!ReferenceEquals(pane.SessionProvider, provider)) continue;
-            if (provider.CanHandle(pane.SessionPath)) return pane.SessionPath;
+            var id = _open.FirstOrDefault(session => ReferenceEquals(session.Provider, pane.SessionProvider))?.Id;
+            if (id is not null) DisconnectSession(id, quiet: true);
         }
-        return string.IsNullOrWhiteSpace(profile?.InitialPath) ? "/" : profile.InitialPath;
+    }
+
+    private static bool IsConnectionClosed(Exception ex)
+    {
+        for (var current = ex; current is not null; current = current.InnerException)
+        {
+            var message = current.Message;
+            if (message.Contains("connection closed", StringComparison.OrdinalIgnoreCase)
+                || message.Contains("forcibly closed", StringComparison.OrdinalIgnoreCase))
+                return true;
+        }
+        return false;
+    }
+
+    private void PublishConnections()
+    {
+        for (var i = 0; i < _open.Count; i++)
+        {
+            var profile = Profile(_open[i].Id);
+            if (profile is not null && profile.Name != _open[i].Name)
+                _open[i] = _open[i] with { Name = profile.Name };
+        }
+        _left.SetConnections(_profiles);
+        _right.SetConnections(_profiles);
+        var links = _open.ToDictionary(session => session.Id, session => session.Link, StringComparer.Ordinal);
+        _left.SetSessionLinks(links);
+        _right.SetSessionLinks(links);
+        var chips = _open.ToArray();
+        _left.SetOpenSessions(chips);
+        _right.SetOpenSessions(chips);
     }
 
     private async Task AttachSharedAsync(FilePane pane, IFileSystemProvider provider, string path)
@@ -701,10 +860,13 @@ public sealed class MainWindow : Window
         });
     }
 
-    private void TrackSession(string id, IFileSystemProvider remote)
+    private void TrackSession(string id, string name, IFileSystemProvider remote)
     {
         _sessions[id] = remote;
+        _open.RemoveAll(session => session.Id == id || ReferenceEquals(session.Provider, remote));
+        _open.Insert(0, new OpenSessionChip(id, name, remote));
         if (!_live.Exists(item => ReferenceEquals(item, remote))) _live.Add(remote);
+        PublishConnections();
     }
 
     private bool PaneUses(IFileSystemProvider provider) =>
@@ -719,6 +881,7 @@ public sealed class MainWindow : Window
         }
         _live.Clear();
         _sessions.Clear();
+        _open.Clear();
         _left.CloseRemote();
         _right.CloseRemote();
     }
@@ -754,8 +917,7 @@ public sealed class MainWindow : Window
             var index = _profiles.FindIndex(item => item.Id == basis.Id);
             if (index < 0 || _profiles[index].Trusts(fingerprint)) return;
             _profiles[index] = _profiles[index] with { HostFingerprint = fingerprint };
-            _left.SetConnections(_profiles);
-            _right.SetConnections(_profiles);
+            PublishConnections();
             var snapshot = _profiles.ToList();
             _ = SaveConnectionsQuiet(snapshot);
         }
@@ -800,16 +962,47 @@ public sealed class MainWindow : Window
         if (RemoteBlocksFiles()) return;
         if (_active.CurrentEntry is not { IsDirectory: false } entry)
         { SetStatus("Select a file to edit."); return; }
+        TextDocument document;
+        try
+        {
+            document = await TextDocuments.ReadAsync(_active.Provider, entry.FullPath, TextDocuments.MaxEditBytes, allowTruncate: false, _operationCancellation!.Token);
+        }
+        catch (InvalidDataException)
+        {
+            await OpenWithSystemAsync(entry);
+            return;
+        }
+        if (!_active.Provider.CanWriteFileContent)
+            throw new NotSupportedException("This provider cannot edit files.");
+        var editor = new TextEditorWindow(this, entry, _active.Provider, document);
+        await editor.ShowDialog(this);
+        if (editor.DidSave) await _active.NavigateAsync(_active.CurrentPath, entry.FullPath);
+        SetStatus(editor.DidSave ? $"Saved: {entry.Name}" : $"Closed: {entry.Name}");
+    }
+
+    private async Task OpenWithSystemAsync(FileEntry entry)
+    {
+        var localPath = await _active.Provider.GetLocalFilePathAsync(entry.FullPath, _operationCancellation!.Token)
+            ?? throw new NotSupportedException("This file is not text, and this connection cannot hand it to a local application.");
+        await _launcher.OpenAsync(localPath, _operationCancellation!.Token);
+        SetStatus($"Opened: {entry.Name}");
+    }
+
+    private async Task EditExternalAsync()
+    {
+        if (RemoteBlocksFiles()) return;
+        if (_active.CurrentEntry is not { IsDirectory: false } entry)
+        { SetStatus("Select a file to edit."); return; }
         var localPath = await RequireLocalFileAsync(_active, entry);
         await _launcher.EditAsync(localPath, _editorExecutable, _operationCancellation!.Token);
-        SetStatus($"Opened in editor: {entry.Name} · Ctrl+R refreshes after saving");
+        SetStatus($"Opened in external editor: {entry.Name} · Ctrl+R refreshes after saving");
     }
 
     private async Task ChooseEditorAsync()
     {
         var editor = await Dialogs.PromptAsync(this, "External editor",
             "Enter the editor executable path or command name, without arguments or surrounding quotes.\n\n" +
-            "Leave empty for the platform default (Notepad on Windows, TextEdit on macOS).",
+            "The file menu opens the current file in this editor. Leave empty to use Notepad on Windows. On Linux, enter an editor command.",
             _editorExecutable, allowEmpty: true);
         if (editor is null) return;
         _editorExecutable = editor.Trim();
@@ -818,7 +1011,7 @@ public sealed class MainWindow : Window
 
     private async Task RenameAsync()
     {
-        if (RemoteBlocksFiles() || TransferBlocksMutation()) return;
+        if (RemoteBlocksFiles()) return;
         var pane = _active;
         if (pane.CurrentEntry is not { Name: not ".." } entry)
         { SetStatus("Select a file or folder to rename."); return; }
@@ -834,7 +1027,8 @@ public sealed class MainWindow : Window
     }
 
     private async Task TransferAsync(bool move, FilePane? sourcePane = null, FilePane? targetPane = null,
-        IReadOnlyList<FileEntry>? draggedEntries = null, string? targetDirectory = null, string? sourceDescription = null)
+        IReadOnlyList<FileEntry>? draggedEntries = null, string? targetDirectory = null, string? sourceDescription = null,
+        IFileSystemProvider? sourceProvider = null)
     {
         var source = sourcePane ?? _active; var destination = targetPane ?? (source == _left ? _right : _left);
         if (source.IsRemote || destination.IsRemote)
@@ -852,7 +1046,7 @@ public sealed class MainWindow : Window
         var label = $"{(move ? "Move" : "Copy")} {what} → {leaf}";
         _transfers.Enqueue(new TransferRequest
         {
-            Source = source.Provider, Destination = destination.Provider, Entries = snapshot,
+            Source = sourceProvider ?? source.Provider, Destination = destination.Provider, Entries = snapshot,
             DestinationDirectory = destinationDirectory, Move = move, Label = label,
             ResolveConflict = conflict => ResolveConflictOnUi(conflict, CancellationToken.None),
             ResolveConflictWithCancellation = ResolveConflictOnUi
@@ -983,7 +1177,7 @@ public sealed class MainWindow : Window
 
     private async Task CreateDirectoryAsync()
     {
-        if (RemoteBlocksFiles() || TransferBlocksMutation()) return;
+        if (RemoteBlocksFiles()) return;
         var pane = _active;
         var name = await Dialogs.PromptAsync(this, "Create directory", $"In: {pane.CurrentPath}\n\nDirectory name:");
         if (name is null) return;
@@ -992,22 +1186,44 @@ public sealed class MainWindow : Window
         SetStatus($"Created: {name}");
     }
 
+    private async Task CreateFileAsync()
+    {
+        if (RemoteBlocksFiles()) return;
+        var pane = _active;
+        if (!pane.Provider.CanWriteFileContent)
+            throw new NotSupportedException("This provider cannot create files.");
+        var name = await Dialogs.PromptAsync(this, "New file", $"In: {pane.CurrentDisplayPath}\n\nFile name:");
+        if (name is null) return;
+        var path = await _operations.CreateFileAsync(pane.Provider, pane.CurrentPath, name, _operationCancellation!.Token);
+        await pane.NavigateAsync(pane.CurrentPath, path);
+        var entry = await pane.Provider.GetEntryAsync(path, _operationCancellation!.Token)
+            ?? throw new FileNotFoundException("The new file is no longer there.", path);
+        var document = await TextDocuments.ReadAsync(pane.Provider, path, TextDocuments.MaxEditBytes, allowTruncate: false, _operationCancellation!.Token);
+        var editor = new TextEditorWindow(this, entry, pane.Provider, document);
+        await editor.ShowDialog(this);
+        if (editor.DidSave) await pane.NavigateAsync(pane.CurrentPath, path);
+        SetStatus(editor.DidSave ? $"Saved: {entry.Name}" : $"Created: {entry.Name}");
+    }
+
     private async Task DeleteAsync(bool permanent)
     {
-        if (RemoteBlocksFiles() || TransferBlocksMutation()) return;
+        if (RemoteBlocksFiles()) return;
         var pane = _active; var entries = pane.OperationEntries;
         if (entries.Count == 0) { SetStatus("Select a file or folder first."); return; }
-        if (!permanent && !pane.Provider.SupportsRecycle)
-            throw new NotSupportedException("The recycle bin is unavailable. Nothing was deleted.");
-        if (!await Dialogs.ConfirmAsync(this, permanent ? "Delete permanently" : "Move to recycle bin",
-                $"{(permanent ? "Permanently delete" : "Recycle")} {Describe(entries, listNames: true)}\n\n" +
-                (permanent ? "This bypasses the recycle bin and cannot be undone here." : "You can restore these items from the system recycle bin."),
-                permanent ? "Delete permanently" : "Recycle")) return;
+        var recycle = !permanent && pane.Provider.SupportsRecycle;
+        var warning = recycle
+            ? "You can restore these items from the system recycle bin."
+            : pane.Provider.SupportsRecycle
+                ? "This bypasses the recycle bin and cannot be undone here."
+                : "This pane has no recycle bin. The items will be deleted permanently.";
+        if (!await Dialogs.ConfirmAsync(this, recycle ? "Move to recycle bin" : "Delete permanently",
+                $"{(recycle ? "Recycle" : "Permanently delete")} {Describe(entries, listNames: true)}\n\n{warning}",
+                recycle ? "Recycle" : "Delete permanently")) return;
         await WithRefreshAsync(async () =>
         {
-            await _operations.DeleteAsync(pane.Provider, entries, permanent ? DeleteMode.Permanent : DeleteMode.Recycle,
+            await _operations.DeleteAsync(pane.Provider, entries, recycle ? DeleteMode.Recycle : DeleteMode.Permanent,
                 Progress(), _operationCancellation!.Token);
-            return permanent ? "Permanently deleted." : "Moved to recycle bin.";
+            return recycle ? "Moved to recycle bin." : "Permanently deleted.";
         });
     }
 
@@ -1027,13 +1243,6 @@ public sealed class MainWindow : Window
             catch (Exception ex) { message += $" Refresh failed: {ex.Message}"; }
         }
         SetStatus(message);
-    }
-
-    private bool TransferBlocksMutation()
-    {
-        if (_transfers.IsIdle) return false;
-        SetStatus("A copy or move is still queued. Cancel it before deleting, renaming, or creating a folder.");
-        return true;
     }
 
     private IProgress<string> Progress() => new Progress<string>(text => { if (_busy) SetStatus(text + " · Esc cancels after the current file"); });
@@ -1115,7 +1324,8 @@ public sealed class MainWindow : Window
             Key.Subtract => () => SelectByMaskAsync(false),
             Key.Multiply => () => { _active.InvertFileMarks(); return Task.CompletedTask; },
             Key.F3 => ViewAsync,
-            Key.F4 when e.KeyModifiers.HasFlag(KeyModifiers.Shift) => ChooseEditorAsync,
+            Key.F4 when e.KeyModifiers.HasFlag(KeyModifiers.Control) && e.KeyModifiers.HasFlag(KeyModifiers.Shift) => ChooseEditorAsync,
+            Key.F4 when e.KeyModifiers.HasFlag(KeyModifiers.Shift) => CreateFileAsync,
             Key.F4 => EditAsync,
             Key.F5 => () => TransferAsync(false),
             Key.F6 when e.KeyModifiers.HasFlag(KeyModifiers.Shift) => RenameAsync,

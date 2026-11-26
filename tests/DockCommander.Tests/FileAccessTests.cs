@@ -14,7 +14,7 @@ public sealed class FileAccessTests
 
     [Theory]
     [InlineData(0, "UTF-8")]
-    [InlineData(1, "UTF-8")]
+    [InlineData(1, "UTF-8 BOM")]
     [InlineData(2, "UTF-16 LE")]
     [InlineData(3, "UTF-16 BE")]
     [InlineData(4, "UTF-32 LE")]
@@ -71,7 +71,6 @@ public sealed class FileAccessTests
 
     [Theory]
     [InlineData(new byte[] { 0, 1, 2, 3 })]
-    [InlineData(new byte[] { 0xFF, 0xFF })]
     [InlineData(new byte[] { 0xE2, 0x82 })]
     public async Task BinaryAndMalformedTextAreRejected(byte[] bytes)
     {
@@ -80,6 +79,74 @@ public sealed class FileAccessTests
         await File.WriteAllBytesAsync(path, bytes, Token);
         await Assert.ThrowsAsync<InvalidDataException>(() => new TextPreviewService().ReadAsync(_provider, path, Token));
         Assert.Equal(bytes, await File.ReadAllBytesAsync(path, Token));
+    }
+
+    [Fact]
+    public void AmbiguousBytesAreGuessedAsWindows1251WithoutWritingTheFile()
+    {
+        var document = TextDocuments.Decode([0xFF, 0xFF]);
+        Assert.Equal("яя", document.Text);
+        Assert.Equal("windows-1251", document.EncodingId);
+        Assert.True(document.LowConfidence);
+    }
+
+    [Theory]
+    [InlineData("utf-8")]
+    [InlineData("utf-8-bom")]
+    [InlineData("utf-16-le")]
+    [InlineData("utf-16-be")]
+    public void UnicodeEncodingsRoundTrip(string encodingId)
+    {
+        const string text = "Hello, мир!\nÁrvíztűrő";
+        var bytes = TextDocuments.Encode(text, encodingId, "\n");
+        var document = TextDocuments.Decode(bytes);
+        Assert.Equal(text, document.Text);
+        Assert.Equal(encodingId, document.EncodingId);
+        Assert.False(document.LowConfidence);
+        Assert.Equal(bytes, TextDocuments.Encode(document.Text, encodingId, document.NewLine));
+    }
+
+    [Theory]
+    [InlineData("windows-1250", "Zażółć gęślą jaźń")]
+    [InlineData("windows-1251", "Привет, мир")]
+    [InlineData("iso-8859-1", "café.")]
+    public void SelectedLegacyEncodingsRoundTrip(string encodingId, string text)
+    {
+        var sample = text + "\r\nnext";
+        var bytes = TextDocuments.Encode(sample, encodingId, "\r\n");
+        var document = TextDocuments.Decode(bytes, encodingId: encodingId);
+        Assert.Equal(sample, document.Text);
+        Assert.Equal(encodingId, document.EncodingId);
+        Assert.Equal("\r\n", document.NewLine);
+        Assert.Equal(bytes, TextDocuments.Encode(document.Text, encodingId, document.NewLine));
+        var guessed = TextDocuments.Decode(bytes);
+        Assert.NotEqual("utf-8", guessed.EncodingId);
+    }
+
+    [Theory]
+    [InlineData("\n", "LF")]
+    [InlineData("\r\n", "CRLF")]
+    public void LineEndingsAreDetectedAndPreserved(string newline, string label)
+    {
+        var text = "one" + newline + "two";
+        var bytes = TextDocuments.Encode(text, "utf-8", newline);
+        var document = TextDocuments.Decode(bytes);
+        Assert.Equal(text, document.Text);
+        Assert.Equal(newline, document.NewLine);
+        Assert.Equal(label, TextDocuments.NewLineLabel(document.NewLine));
+        Assert.Equal(bytes, TextDocuments.Encode(document.Text, document.EncodingId, document.NewLine));
+    }
+
+    [Fact]
+    public async Task EditorRefusesAFileAboveItsLimitWithoutChangingIt()
+    {
+        using var temp = new ScratchDirectory();
+        var path = temp.File("big.txt", new string('a', TextDocuments.MaxEditBytes + 1));
+        var before = await File.ReadAllBytesAsync(path, Token);
+        var error = await Assert.ThrowsAsync<InvalidDataException>(() =>
+            TextDocuments.ReadAsync(_provider, path, TextDocuments.MaxEditBytes, allowTruncate: false, Token));
+        Assert.Contains("too large", error.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.Equal(before, await File.ReadAllBytesAsync(path, Token));
     }
 
     [Fact]

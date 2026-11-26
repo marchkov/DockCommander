@@ -51,6 +51,17 @@ internal sealed class SecretStore
         finally { _gate.Release(); }
     }
 
+    public async Task<bool> ExistsAsync(string id)
+    {
+        await _gate.WaitAsync();
+        try
+        {
+            var entries = await ReadAsync();
+            return entries.ContainsKey(id);
+        }
+        finally { _gate.Release(); }
+    }
+
     public async Task DeleteAsync(string id)
     {
         await _gate.WaitAsync();

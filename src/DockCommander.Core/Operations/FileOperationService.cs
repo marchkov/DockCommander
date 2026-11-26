@@ -35,10 +35,9 @@ public sealed class FileOperationService
         CancellationToken cancellationToken = default, IProgress<TransferProgress>? transferProgress = null,
         IProgress<BatchTransferProgress>? batchProgress = null)
     {
-        await _gate.WaitAsync(cancellationToken);
-        try
-        {
-            var completed = 0;
+        // The transfer queue runs one copy or move at a time. Delete, rename, and folder
+        // creation stay on _gate and may overlap a transfer; they do not wait for it.
+        var completed = 0;
             var skipped = 0;
             var sameProvider = ReferenceEquals(sourceProvider, destinationProvider);
             var children = new Dictionary<string, FileEntry[]>(sourceProvider.PathComparer);
@@ -185,8 +184,6 @@ public sealed class FileOperationService
                     ReportBatch(entry.FullPath);
                 }
             }
-        }
-        finally { _gate.Release(); }
     }
 
     public async Task DeleteAsync(IFileSystemProvider provider, IReadOnlyList<FileEntry> entries, DeleteMode mode,
@@ -227,6 +224,20 @@ public sealed class FileOperationService
             var path = provider.CombinePath(directory, name);
             if (await provider.GetEntryAsync(path, cancellationToken) is not null) throw new IOException("An entry with this name already exists.");
             await provider.CreateDirectoryAsync(path, cancellationToken);
+        }
+        finally { _gate.Release(); }
+    }
+
+    public async Task<string> CreateFileAsync(IFileSystemProvider provider, string directory, string name, CancellationToken cancellationToken = default)
+    {
+        await _gate.WaitAsync(cancellationToken);
+        try
+        {
+            var path = provider.CombinePath(directory, name);
+            if (await provider.GetEntryAsync(path, cancellationToken) is not null) throw new IOException("An entry with this name already exists.");
+            await using var empty = new MemoryStream([]);
+            await provider.WriteFileAsync(path, empty, false, null, cancellationToken);
+            return path;
         }
         finally { _gate.Release(); }
     }
