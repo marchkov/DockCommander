@@ -13,6 +13,7 @@ public interface IFileSystemProvider
     StringComparer PathComparer { get; }
     bool CanHandle(string path);
     string NormalizePath(string path);
+    string DisplayPath(string path) => path;
     string CombinePath(string directory, string name);
     bool IsSameOrDescendant(string path, string ancestor);
     Task<IReadOnlyList<LocationEntry>> GetLocationsAsync(CancellationToken cancellationToken = default);
@@ -37,6 +38,10 @@ public interface IFileSystemProvider
     // Optional capabilities: providers without local files can still support the text viewer.
     Task<Stream> OpenReadAsync(string path, CancellationToken cancellationToken = default) =>
         Task.FromException<Stream>(new NotSupportedException("This provider does not support reading file content."));
+    // Writes a new file from a caller-owned stream. The stream is not disposed here.
+    Task WriteFileAsync(string destinationPath, Stream content, bool overwrite, IProgress<long>? bytesCopied,
+        CancellationToken cancellationToken = default) =>
+        Task.FromException(new NotSupportedException("This provider does not support writing file content."));
     Task<string?> GetLocalFilePathAsync(string path, CancellationToken cancellationToken = default) => Task.FromResult<string?>(null);
     Task<string> RenameAsync(string path, string newName, CancellationToken cancellationToken = default) =>
         Task.FromException<string>(new NotSupportedException("This provider does not support renaming entries."));

@@ -9,6 +9,7 @@ internal sealed class SettingsStore(string? path = null)
 {
     private readonly string _path = path ?? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
         "DockCommander", "settings.json");
+    public string FilePath => _path;
     public string? LoadWarning { get; private set; }
 
     public async Task<AppSettings> LoadAsync()

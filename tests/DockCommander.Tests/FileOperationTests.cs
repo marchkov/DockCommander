@@ -55,6 +55,32 @@ public sealed class FileOperationTests
     }
 
     [Fact]
+    public async Task SeparateProviderInstancesCopyThroughStreamsAndCanMove()
+    {
+        using var temp = new ScratchDirectory();
+        var source = new LocalFileSystemProvider();
+        var destination = new LocalFileSystemProvider();
+        var from = temp.Folder("from");
+        var to = temp.Folder("to");
+        temp.File("from/dir/a.txt", "hello");
+        var folder = (await source.GetEntryAsync(Path.Combine(from, "dir")))!;
+        var service = new FileOperationService();
+        var copied = await service.TransferAsync(source, destination, [folder], to, false,
+            _ => Task.FromResult(new ConflictResolution(ConflictAction.Overwrite)));
+        Assert.Equal(1, copied.Completed);
+        Assert.Equal("hello", System.IO.File.ReadAllText(Path.Combine(to, "dir", "a.txt")));
+        Assert.True(System.IO.File.Exists(Path.Combine(from, "dir", "a.txt")));
+        temp.Folder("from/dir/inside");
+        await Assert.ThrowsAsync<IOException>(() => service.TransferAsync(source, destination, [folder],
+            Path.Combine(from, "dir", "inside"), false, _ => Task.FromResult(new ConflictResolution(ConflictAction.Overwrite))));
+        var file = (await source.GetEntryAsync(Path.Combine(from, "dir", "a.txt")))!;
+        await service.TransferAsync(source, destination, [file], Path.Combine(to, "dir"), true,
+            _ => Task.FromResult(new ConflictResolution(ConflictAction.Overwrite)));
+        Assert.False(System.IO.File.Exists(Path.Combine(from, "dir", "a.txt")));
+        Assert.Equal("hello", System.IO.File.ReadAllText(Path.Combine(to, "dir", "a.txt")));
+    }
+
+    [Fact]
     public async Task CancellingBatchScanDoesNotCreateDestination()
     {
         using var temp = new ScratchDirectory();

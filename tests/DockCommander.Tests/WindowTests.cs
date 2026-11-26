@@ -9,6 +9,7 @@ using Avalonia.Threading;
 using Avalonia.VisualTree;
 using Avalonia.Styling;
 using DockCommander.App;
+using DockCommander.Core.Connections;
 using DockCommander.Core.Files;
 using DockCommander.Core.Operations;
 using DockCommander.App.Platform;
@@ -393,6 +394,481 @@ public sealed class WindowTests
             await Task.Delay(10, TestContext.Current.CancellationToken);
         }
         Assert.True(predicate(), "The UI did not reach the expected state.");
+    }
+
+    [AvaloniaFact]
+    public async Task RemotePaneKeepsItsOwnModeAndDoesNotOpenAConnection()
+    {
+        using var temp = new ScratchDirectory();
+        var settings = new SettingsStore(Path.Combine(temp.Root, "settings.json"));
+        await settings.SaveAsync(new(temp.Folder("left"), temp.Folder("right")));
+        await ConnectionStore.Beside(settings).SaveAsync(
+        [
+            new("prod", "Production", ConnectionProtocols.Sftp, "server.example.com", 22, "root", "/var/www"),
+            new("nas", "Old NAS", ConnectionProtocols.WebDav, "192.168.1.20", 21)
+        ]);
+        var window = new MainWindow(settings, new FixedLocationsProvider(new LocalFileSystemProvider(),
+            _ => Task.FromResult<IReadOnlyList<LocationEntry>>([new("t", "Test", temp.Root)])));
+        window.Show();
+        try
+        {
+            var panes = window.GetVisualDescendants().OfType<FilePane>().ToArray();
+            await WaitUntil(() => panes.All(pane => pane.IsEnabled && pane.CurrentPath.StartsWith(temp.Root, StringComparison.Ordinal)));
+            panes[0].GetVisualDescendants().OfType<Button>().Single(button => button.Name == "RemoteMode")
+                .RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+            window.UpdateLayout(); Dispatcher.UIThread.RunJobs();
+            Assert.True(panes[0].IsRemote);
+            Assert.False(panes[1].IsRemote);
+            var files = panes[0].GetVisualDescendants().OfType<ListBox>().Single(list => list.Name != "ConnectionList");
+            Assert.False(files.IsEffectivelyVisible);
+            var search = panes[0].GetVisualDescendants().OfType<TextBox>().Single(box => box.Name == "SearchConnections");
+            Assert.True(search.IsEffectivelyVisible);
+            window.UpdateLayout(); Dispatcher.UIThread.RunJobs();
+            Assert.Contains(panes[0].GetVisualDescendants().OfType<TextBlock>(), block => block.Text == "Production");
+            Assert.Contains(panes[0].GetVisualDescendants().OfType<TextBlock>(), block => block.Text == "SFTP · server.example.com:22");
+            search.Text = "nas";
+            window.UpdateLayout(); Dispatcher.UIThread.RunJobs();
+            Assert.Contains(panes[0].GetVisualDescendants().OfType<TextBlock>(), block => block.Text == "Old NAS");
+            Assert.DoesNotContain(panes[0].GetVisualDescendants().OfType<TextBlock>(), block => block.Text == "Production");
+            panes[0].GetVisualDescendants().OfType<Button>().Single(button => Equals(button.Content, "Connect"))
+                .RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+            Assert.Contains(window.GetVisualDescendants().OfType<TextBlock>(), block => block.Text == "WebDAV is not implemented yet.");
+            Press(window, Key.F5);
+            Assert.Contains(window.GetVisualDescendants().OfType<TextBlock>(),
+                block => block.Text == "This pane is showing connections. Switch it to Local for files.");
+        }
+        finally { await Close(window); }
+    }
+
+    [AvaloniaFact]
+    public async Task SftpConnectOpensThatPaneAndDoesNotStoreThePassword()
+    {
+        using var temp = new ScratchDirectory();
+        var settings = new SettingsStore(Path.Combine(temp.Root, "settings.json"));
+        await settings.SaveAsync(new(temp.Folder("left"), temp.Folder("right")));
+        await ConnectionStore.Beside(settings).SaveAsync(
+        [new("prod", "Production", ConnectionProtocols.Sftp, "server.example.com", 22, "root", "/")]);
+        var remote = new MemorySftp();
+        remote.AddDirectory("/");
+        remote.AddFile("/hello.txt", "hi");
+        var connector = new RecordingConnector(remote);
+        var window = new MainWindow(settings, new FixedLocationsProvider(new LocalFileSystemProvider(),
+            _ => Task.FromResult<IReadOnlyList<LocationEntry>>([new("t", "Test", temp.Root)])), sftp: connector);
+        window.Show();
+        try
+        {
+            var panes = window.GetVisualDescendants().OfType<FilePane>().ToArray();
+            await WaitUntil(() => panes.All(pane => pane.IsEnabled && pane.CurrentPath.StartsWith(temp.Root, StringComparison.Ordinal)));
+            panes[0].GetVisualDescendants().OfType<Button>().Single(button => button.Name == "RemoteMode")
+                .RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+            window.UpdateLayout(); Dispatcher.UIThread.RunJobs();
+            panes[0].GetVisualDescendants().OfType<Button>().Single(button => Equals(button.Content, "Connect"))
+                .RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+            await WaitUntil(() => window.OwnedWindows.Any());
+            var dialog = window.OwnedWindows.Single();
+            dialog.GetVisualDescendants().OfType<TextBox>().Single(box => box.Name == "SftpPassword").Text = "session-secret";
+            dialog.GetVisualDescendants().OfType<CheckBox>().Single(box => box.Name == "RememberSecret").IsChecked = false;
+            dialog.GetVisualDescendants().OfType<Button>().Single(button => Equals(button.Content, "Connect"))
+                .RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+            await WaitUntil(() =>
+            {
+                window.UpdateLayout();
+                return panes[0].IsEnabled && !panes[0].IsRemote &&
+                    panes[0].GetVisualDescendants().OfType<TextBlock>().Any(block => block.Text == "hello.txt");
+            });
+            Assert.False(panes[1].IsRemote);
+            Assert.Equal("/", panes[0].CurrentDisplayPath);
+            Assert.StartsWith(temp.Root, panes[1].CurrentPath, StringComparison.Ordinal);
+            Assert.Equal("session-secret", connector.Password);
+            Assert.Contains("chosen", panes[0].GetVisualDescendants().OfType<Button>().Single(button => button.Name == "RemoteMode").Classes);
+            Assert.DoesNotContain("session-secret", File.ReadAllText(ConnectionStore.Beside(settings).Path));
+            Assert.False(File.Exists(SecretStore.Beside(settings).Path));
+            Assert.DoesNotContain(panes[1].GetVisualDescendants().OfType<TextBlock>(), block => block.Text == "Production" && block.IsEffectivelyVisible);
+            panes[0].GetVisualDescendants().OfType<Button>().Single(button => button.Name == "LocalMode")
+                .RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+            await WaitUntil(() => panes[0].IsEnabled && panes[0].CurrentPath.StartsWith(temp.Root, StringComparison.Ordinal));
+            panes[1].GetVisualDescendants().OfType<Button>().Single(button => button.Name == "RemoteMode")
+                .RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+            await WaitUntil(() =>
+            {
+                window.UpdateLayout();
+                return panes[1].IsEnabled && !panes[1].IsRemote &&
+                    panes[1].GetVisualDescendants().OfType<TextBlock>().Any(block => block.Text == "hello.txt" && block.IsEffectivelyVisible);
+            });
+            Assert.Empty(window.OwnedWindows);
+            Assert.Equal(1, connector.Calls);
+            panes[0].GetVisualDescendants().OfType<Button>().Single(button => button.Name == "RemoteMode")
+                .RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+            await WaitUntil(() => panes[0].IsEnabled && !panes[0].IsRemote &&
+                panes[0].GetVisualDescendants().OfType<TextBlock>().Any(block => block.Text == "hello.txt" && block.IsEffectivelyVisible));
+            var plus = panes[0].GetVisualDescendants().OfType<Button>().Single(button => button.Name == "SavedConnections");
+            Assert.True(plus.IsVisible);
+            plus.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+            await WaitUntil(() => panes[0].IsRemote && panes[0].GetVisualDescendants().OfType<TextBox>().Any(box => box.Name == "SearchConnections" && box.IsEffectivelyVisible));
+            panes[0].GetVisualDescendants().OfType<Button>().Single(button => button.Name == "RemoteMode")
+                .RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+            await WaitUntil(() => panes[0].IsEnabled && !panes[0].IsRemote &&
+                panes[0].GetVisualDescendants().OfType<TextBlock>().Any(block => block.Text == "hello.txt" && block.IsEffectivelyVisible));
+            panes[0].GetVisualDescendants().OfType<Button>().Single(button => button.Name == "LocalMode")
+                .RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+            await WaitUntil(() => panes[0].IsEnabled && panes[0].CurrentPath.StartsWith(temp.Root, StringComparison.Ordinal));
+            Assert.Contains("chosen", panes[0].GetVisualDescendants().OfType<Button>().Single(button => button.Name == "LocalMode").Classes);
+            Assert.Empty(window.OwnedWindows);
+            panes[0].GetVisualDescendants().OfType<Button>().Single(button => button.Name == "RemoteMode")
+                .RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+            await WaitUntil(() => panes[0].IsEnabled && !panes[0].IsRemote &&
+                panes[0].GetVisualDescendants().OfType<TextBlock>().Any(block => block.Text == "hello.txt" && block.IsEffectivelyVisible));
+            Assert.Equal("session-secret", connector.Password);
+            Assert.Equal(1, connector.Calls);
+        }
+        finally { await Close(window); }
+    }
+
+    [AvaloniaFact]
+    public async Task SavingAConnectionShowsItImmediately()
+    {
+        using var temp = new ScratchDirectory();
+        var settings = new SettingsStore(Path.Combine(temp.Root, "settings.json"));
+        await settings.SaveAsync(new(temp.Folder("left"), temp.Folder("right")));
+        var window = new MainWindow(settings, new FixedLocationsProvider(new LocalFileSystemProvider(),
+            _ => Task.FromResult<IReadOnlyList<LocationEntry>>([new("t", "Test", temp.Root)])));
+        window.Show();
+        try
+        {
+            var pane = window.GetVisualDescendants().OfType<FilePane>().First();
+            await WaitUntil(() => pane.IsEnabled && pane.CurrentPath.StartsWith(temp.Root, StringComparison.Ordinal));
+            pane.GetVisualDescendants().OfType<Button>().Single(button => button.Name == "RemoteMode")
+                .RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+            window.UpdateLayout(); Dispatcher.UIThread.RunJobs();
+            pane.GetVisualDescendants().OfType<Button>().Single(button => button.Name == "AddConnection")
+                .RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+            await WaitUntil(() => window.OwnedWindows.Any());
+            var dialog = window.OwnedWindows.Single();
+            dialog.GetVisualDescendants().OfType<TextBox>().Single(box => box.Name == "Name").Text = "DotHost";
+            dialog.GetVisualDescendants().OfType<TextBox>().Single(box => box.Name == "Host").Text = "ftp.example.com";
+            dialog.GetVisualDescendants().OfType<Button>().Single(button => Equals(button.Content, "Save"))
+                .RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+            await WaitUntil(() =>
+            {
+                window.UpdateLayout();
+                return pane.GetVisualDescendants().OfType<TextBlock>().Any(block => block.Text == "DotHost");
+            });
+            Assert.Contains("DotHost", File.ReadAllText(ConnectionStore.Beside(settings).Path));
+        }
+        finally { await Close(window); }
+    }
+
+    [AvaloniaFact]
+    public async Task FtpConnectOpensThatPaneAndDoesNotStoreThePassword()
+    {
+        using var temp = new ScratchDirectory();
+        var settings = new SettingsStore(Path.Combine(temp.Root, "settings.json"));
+        await settings.SaveAsync(new(temp.Folder("left"), temp.Folder("right")));
+        await ConnectionStore.Beside(settings).SaveAsync(
+        [new("nas", "Old NAS", ConnectionProtocols.Ftp, "192.168.1.20", 21, "reader", "/")]);
+        var remote = new MemorySftp();
+        remote.AddDirectory("/");
+        remote.AddFile("/notes.txt", "ftp");
+        var connector = new RecordingConnector(remote, "ftp");
+        var window = new MainWindow(settings, new FixedLocationsProvider(new LocalFileSystemProvider(),
+            _ => Task.FromResult<IReadOnlyList<LocationEntry>>([new("t", "Test", temp.Root)])), ftp: connector);
+        window.Show();
+        try
+        {
+            var panes = window.GetVisualDescendants().OfType<FilePane>().ToArray();
+            await WaitUntil(() => panes.All(pane => pane.IsEnabled && pane.CurrentPath.StartsWith(temp.Root, StringComparison.Ordinal)));
+            panes[0].GetVisualDescendants().OfType<Button>().Single(button => button.Name == "RemoteMode")
+                .RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+            window.UpdateLayout(); Dispatcher.UIThread.RunJobs();
+            panes[0].GetVisualDescendants().OfType<Button>().Single(button => Equals(button.Content, "Connect"))
+                .RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+            await WaitUntil(() => window.OwnedWindows.Any());
+            var dialog = window.OwnedWindows.Single();
+            dialog.GetVisualDescendants().OfType<TextBox>().Single(box => box.Name == "SftpPassword").Text = "ftp-secret";
+            dialog.GetVisualDescendants().OfType<CheckBox>().Single(box => box.Name == "RememberSecret").IsChecked = false;
+            dialog.GetVisualDescendants().OfType<Button>().Single(button => Equals(button.Content, "Connect"))
+                .RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+            await WaitUntil(() =>
+            {
+                window.UpdateLayout();
+                return panes[0].IsEnabled && !panes[0].IsRemote &&
+                    panes[0].GetVisualDescendants().OfType<TextBlock>().Any(block => block.Text == "notes.txt");
+            });
+            Assert.False(panes[1].IsRemote);
+            Assert.Equal("ftp-secret", connector.Password);
+            Assert.DoesNotContain("ftp-secret", File.ReadAllText(ConnectionStore.Beside(settings).Path));
+            Assert.StartsWith(temp.Root, panes[1].CurrentPath, StringComparison.Ordinal);
+        }
+        finally { await Close(window); }
+    }
+
+    [AvaloniaFact]
+    public async Task RememberedPasswordIsEncryptedAndReusedWithoutAnotherPrompt()
+    {
+        using var temp = new ScratchDirectory();
+        var settings = new SettingsStore(Path.Combine(temp.Root, "settings.json"));
+        await settings.SaveAsync(new(temp.Folder("left"), temp.Folder("right")));
+        await ConnectionStore.Beside(settings).SaveAsync(
+        [new("prod", "Production", ConnectionProtocols.Sftp, "server.example.com", 22, "root", "/")]);
+        var remote = new MemorySftp();
+        remote.AddDirectory("/");
+        remote.AddFile("/hello.txt", "hi");
+        var first = new RecordingConnector(remote);
+        var window = new MainWindow(settings, new FixedLocationsProvider(new LocalFileSystemProvider(),
+            _ => Task.FromResult<IReadOnlyList<LocationEntry>>([new("t", "Test", temp.Root)])), sftp: first);
+        window.Show();
+        try
+        {
+            await SubmitPassword(window, "session-secret", remember: true);
+            await WaitUntil(() =>
+            {
+                window.UpdateLayout();
+                return window.GetVisualDescendants().OfType<FilePane>().First().IsEnabled &&
+                    window.GetVisualDescendants().OfType<TextBlock>().Any(block => block.Text == "hello.txt");
+            });
+            var secrets = await File.ReadAllTextAsync(SecretStore.Beside(settings).Path, TestContext.Current.CancellationToken);
+            var connections = await File.ReadAllTextAsync(ConnectionStore.Beside(settings).Path, TestContext.Current.CancellationToken);
+            Assert.True(secrets.Contains("dpapi:", StringComparison.Ordinal) || secrets.Contains("aes1:", StringComparison.Ordinal));
+            Assert.DoesNotContain("session-secret", secrets);
+            Assert.DoesNotContain("session-secret", connections);
+        }
+        finally { await Close(window); }
+
+        var second = new RecordingConnector(remote);
+        var again = new MainWindow(settings, new FixedLocationsProvider(new LocalFileSystemProvider(),
+            _ => Task.FromResult<IReadOnlyList<LocationEntry>>([new("t", "Test", temp.Root)])), sftp: second);
+        again.Show();
+        try
+        {
+            var pane = again.GetVisualDescendants().OfType<FilePane>().First();
+            await WaitUntil(() => pane.IsEnabled);
+            pane.GetVisualDescendants().OfType<Button>().Single(button => button.Name == "RemoteMode")
+                .RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+            again.UpdateLayout(); Dispatcher.UIThread.RunJobs();
+            pane.GetVisualDescendants().OfType<Button>().Single(button => Equals(button.Content, "Connect"))
+                .RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+            await WaitUntil(() =>
+            {
+                again.UpdateLayout();
+                return pane.IsEnabled && !pane.IsRemote && !again.OwnedWindows.Any() &&
+                    pane.GetVisualDescendants().OfType<TextBlock>().Any(block => block.Text == "hello.txt");
+            });
+            Assert.Equal("session-secret", second.Password);
+            Assert.Equal(1, second.Calls);
+        }
+        finally { await Close(again); }
+    }
+
+    [AvaloniaFact]
+    public async Task FailedSignInOpensThePasswordWindowAgain()
+    {
+        using var temp = new ScratchDirectory();
+        var settings = new SettingsStore(Path.Combine(temp.Root, "settings.json"));
+        await settings.SaveAsync(new(temp.Folder("left"), temp.Folder("right")));
+        await ConnectionStore.Beside(settings).SaveAsync(
+        [new("prod", "Production", ConnectionProtocols.Sftp, "server.example.com", 22, "root", "/")]);
+        var remote = new MemorySftp();
+        remote.AddDirectory("/");
+        remote.AddFile("/hello.txt", "hi");
+        var locations = new FixedLocationsProvider(new LocalFileSystemProvider(),
+            _ => Task.FromResult<IReadOnlyList<LocationEntry>>([new("t", "Test", temp.Root)]));
+        var first = new RecordingConnector(remote);
+        var window = new MainWindow(settings, locations, sftp: first);
+        window.Show();
+        try { await SubmitPassword(window, "session-secret", remember: true); await WaitUntil(() => SeesFile(window, "hello.txt")); }
+        finally { await Close(window); }
+
+        var second = new RecordingConnector(remote) { FailTimes = 1 };
+        var again = new MainWindow(settings, locations, sftp: second);
+        again.Show();
+        try
+        {
+            var pane = again.GetVisualDescendants().OfType<FilePane>().First();
+            await WaitUntil(() => pane.IsEnabled);
+            pane.GetVisualDescendants().OfType<Button>().Single(button => button.Name == "RemoteMode")
+                .RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+            again.UpdateLayout(); Dispatcher.UIThread.RunJobs();
+            pane.GetVisualDescendants().OfType<Button>().Single(button => Equals(button.Content, "Connect"))
+                .RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+            await WaitUntil(() => again.OwnedWindows.Any(owned =>
+                owned.GetVisualDescendants().OfType<TextBox>().Any(box => box.Name == "SftpPassword" && box.Text == "session-secret")));
+            Click(again.OwnedWindows.Single(), "Connect");
+            await WaitUntil(() => SeesFile(again, "hello.txt") && !again.OwnedWindows.Any());
+            Assert.Equal(2, second.Calls);
+            Assert.Equal("session-secret", second.Password);
+        }
+        finally { await Close(again); }
+    }
+
+    private static bool SeesFile(MainWindow window, string name)
+    {
+        window.UpdateLayout();
+        return window.GetVisualDescendants().OfType<FilePane>().First().IsEnabled &&
+            window.GetVisualDescendants().OfType<TextBlock>().Any(block => block.Text == name);
+    }
+
+    [AvaloniaFact]
+    public async Task ServerTrustIsRememberedUntilTheIdentityChanges()
+    {
+        using var temp = new ScratchDirectory();
+        var settings = new SettingsStore(Path.Combine(temp.Root, "settings.json"));
+        await settings.SaveAsync(new(temp.Folder("left"), temp.Folder("right")));
+        await ConnectionStore.Beside(settings).SaveAsync(
+        [new("prod", "Production", ConnectionProtocols.Sftp, "server.example.com", 22, "root", "/")]);
+        var remote = new MemorySftp();
+        remote.AddDirectory("/");
+        remote.AddFile("/hello.txt", "hi");
+        var first = new RecordingConnector(remote) { ChallengeTrust = true, Fingerprint = "ssh-ed25519 SHA256:abc" };
+        var window = new MainWindow(settings, new FixedLocationsProvider(new LocalFileSystemProvider(),
+            _ => Task.FromResult<IReadOnlyList<LocationEntry>>([new("t", "Test", temp.Root)])), sftp: first);
+        window.Show();
+        try
+        {
+            await SubmitPassword(window, "session-secret", remember: true);
+            await WaitUntil(() => window.OwnedWindows.Any(owned => owned.Title == "Trust server"));
+            Click(window.OwnedWindows.Single(), "Trust");
+            await WaitUntil(() =>
+            {
+                window.UpdateLayout();
+                return window.GetVisualDescendants().OfType<TextBlock>().Any(block => block.Text == "hello.txt") &&
+                    File.ReadAllText(ConnectionStore.Beside(settings).Path).Contains("SHA256:abc", StringComparison.Ordinal);
+            });
+        }
+        finally { await Close(window); }
+
+        var second = new RecordingConnector(remote) { ChallengeTrust = true, Fingerprint = "ssh-ed25519 SHA256:abc" };
+        var again = new MainWindow(settings, new FixedLocationsProvider(new LocalFileSystemProvider(),
+            _ => Task.FromResult<IReadOnlyList<LocationEntry>>([new("t", "Test", temp.Root)])), sftp: second);
+        again.Show();
+        try
+        {
+            var pane = again.GetVisualDescendants().OfType<FilePane>().First();
+            await WaitUntil(() => pane.IsEnabled);
+            pane.GetVisualDescendants().OfType<Button>().Single(button => button.Name == "RemoteMode")
+                .RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+            again.UpdateLayout(); Dispatcher.UIThread.RunJobs();
+            pane.GetVisualDescendants().OfType<Button>().Single(button => Equals(button.Content, "Connect"))
+                .RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+            await WaitUntil(() =>
+            {
+                again.UpdateLayout();
+                return pane.IsEnabled && !pane.IsRemote && !again.OwnedWindows.Any() &&
+                    pane.GetVisualDescendants().OfType<TextBlock>().Any(block => block.Text == "hello.txt");
+            });
+            Assert.Equal(1, second.Calls);
+        }
+        finally { await Close(again); }
+
+        var third = new RecordingConnector(remote) { ChallengeTrust = true, Fingerprint = "ssh-ed25519 SHA256:changed" };
+        var changed = new MainWindow(settings, new FixedLocationsProvider(new LocalFileSystemProvider(),
+            _ => Task.FromResult<IReadOnlyList<LocationEntry>>([new("t", "Test", temp.Root)])), sftp: third);
+        changed.Show();
+        try
+        {
+            var pane = changed.GetVisualDescendants().OfType<FilePane>().First();
+            await WaitUntil(() => pane.IsEnabled);
+            pane.GetVisualDescendants().OfType<Button>().Single(button => button.Name == "RemoteMode")
+                .RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+            changed.UpdateLayout(); Dispatcher.UIThread.RunJobs();
+            pane.GetVisualDescendants().OfType<Button>().Single(button => Equals(button.Content, "Connect"))
+                .RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+            await WaitUntil(() => changed.OwnedWindows.Any(owned => owned.Title == "Trust server"));
+            Click(changed.OwnedWindows.Single(), "Trust");
+            await WaitUntil(() =>
+                File.ReadAllText(ConnectionStore.Beside(settings).Path).Contains("SHA256:changed", StringComparison.Ordinal));
+        }
+        finally { await Close(changed); }
+    }
+
+    [AvaloniaFact]
+    public async Task AChangedCertificateIsAskedAgainEvenWhenTheNewOneIsValid()
+    {
+        using var temp = new ScratchDirectory();
+        var settings = new SettingsStore(Path.Combine(temp.Root, "settings.json"));
+        await settings.SaveAsync(new(temp.Folder("left"), temp.Folder("right")));
+        await ConnectionStore.Beside(settings).SaveAsync(
+        [new("nas", "Old NAS", ConnectionProtocols.Ftp, "192.168.1.20", 21, "reader", "/")]);
+        var remote = new MemorySftp();
+        remote.AddDirectory("/");
+        remote.AddFile("/notes.txt", "ftp");
+        var locations = new FixedLocationsProvider(new LocalFileSystemProvider(),
+            _ => Task.FromResult<IReadOnlyList<LocationEntry>>([new("t", "Test", temp.Root)]));
+        var first = new RecordingConnector(remote, "ftp") { ChallengeTrust = true, SystemTrusted = true, Fingerprint = "AAAA1111" };
+        var window = new MainWindow(settings, locations, ftp: first);
+        window.Show();
+        try
+        {
+            await SubmitPassword(window, "ftp-secret", remember: false);
+            await WaitUntil(() =>
+            {
+                window.UpdateLayout();
+                return !window.OwnedWindows.Any() &&
+                    window.GetVisualDescendants().OfType<TextBlock>().Any(block => block.Text == "notes.txt") &&
+                    File.ReadAllText(ConnectionStore.Beside(settings).Path).Contains("AAAA1111", StringComparison.Ordinal);
+            });
+        }
+        finally { await Close(window); }
+
+        var second = new RecordingConnector(remote, "ftp") { ChallengeTrust = true, SystemTrusted = true, Fingerprint = "BBBB2222" };
+        var again = new MainWindow(settings, locations, ftp: second);
+        again.Show();
+        try
+        {
+            await SubmitPassword(again, "ftp-secret", remember: false);
+            await WaitUntil(() => again.OwnedWindows.Any(owned => owned.Title == "Trust certificate"));
+            Click(again.OwnedWindows.Single(), "Trust");
+            await WaitUntil(() =>
+                File.ReadAllText(ConnectionStore.Beside(settings).Path).Contains("BBBB2222", StringComparison.Ordinal));
+        }
+        finally { await Close(again); }
+    }
+
+    private static async Task SubmitPassword(MainWindow window, string password, bool remember)
+    {
+        var pane = window.GetVisualDescendants().OfType<FilePane>().First();
+        await WaitUntil(() => pane.IsEnabled);
+        pane.GetVisualDescendants().OfType<Button>().Single(button => button.Name == "RemoteMode")
+            .RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+        window.UpdateLayout(); Dispatcher.UIThread.RunJobs();
+        pane.GetVisualDescendants().OfType<Button>().Single(button => Equals(button.Content, "Connect"))
+            .RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+        await WaitUntil(() => window.OwnedWindows.Any());
+        var dialog = window.OwnedWindows.Single();
+        dialog.GetVisualDescendants().OfType<TextBox>().Single(box => box.Name == "SftpPassword").Text = password;
+        dialog.GetVisualDescendants().OfType<CheckBox>().Single(box => box.Name == "RememberSecret").IsChecked = remember;
+        Click(dialog, "Connect");
+    }
+
+    private sealed class RecordingConnector(MemorySftp remote, string scheme = "sftp") : ISftpConnector, IFtpConnector
+    {
+        public string? Password { get; private set; }
+        public int Calls { get; private set; }
+        public int FailTimes { get; set; }
+        public bool ChallengeTrust { get; set; }
+        public bool SystemTrusted { get; set; }
+        public string Fingerprint { get; set; } = "ssh-ed25519 SHA256:abc";
+
+        public Task<IFileSystemProvider> ConnectAsync(ConnectionProfile profile, SftpCredentials credentials,
+            Func<string, bool> trustHost, CancellationToken cancellationToken) =>
+            Finish(profile, credentials, () => !ChallengeTrust || trustHost(Fingerprint));
+
+        public Task<IFileSystemProvider> ConnectAsync(ConnectionProfile profile, SftpCredentials credentials,
+            Func<string, bool, bool> trustCertificate, CancellationToken cancellationToken) =>
+            Finish(profile, credentials, () => !ChallengeTrust || trustCertificate(Fingerprint, SystemTrusted));
+
+        private Task<IFileSystemProvider> Finish(ConnectionProfile profile, SftpCredentials credentials, Func<bool> accept) =>
+            Task.Run<IFileSystemProvider>(() =>
+            {
+                Calls++;
+                Password = credentials.Password;
+                if (FailTimes > 0)
+                {
+                    FailTimes--;
+                    throw new IOException("Authentication failed.");
+                }
+                if (!accept()) throw new IOException("The server was not trusted.");
+                return new SftpFileSystemProvider(remote, profile.Id, profile.Name, profile.InitialPath, scheme);
+            });
     }
 
     private static async Task<(MainWindow Window, FilePane Left, FilePane Right, SettingsStore Settings)> Open(ScratchDirectory temp, ITrashService? trash = null, IExternalFileLauncher? launcher = null, IFileSystemProvider? provider = null,

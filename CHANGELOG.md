@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+- An open remote session is shared. Switching the other pane to Remote attaches that connection, so both panes can browse it. A remembered password or private key is encrypted for this user account. A failed connection asks for those sign-in details again. The server key or certificate is confirmed once per connection and asked again only if it changes.
+- A connected pane keeps its session when switched to Local and back to Remote. A plus button beside the connection opens the saved connections without disconnecting.
+- FTP and FTPS open in the pane that requested them. FTPS uses explicit TLS, or implicit TLS on port 990. Anonymous FTP does not ask for one. WebDAV is still not connected.
+- SFTP opens in the pane that requested it. Copy and move use the existing queue.
+- Copy and move can run between two different file-system providers through the same queue.
+  The pane can replace its provider without a separate window.
+- Each pane can switch between Local and Remote. Remote lists saved connections and does not open a network session yet.
+- Drag local files and folders from DockCommander into Explorer and other file managers.
+  A move completed by the other application refreshes the source pane.
+
 ## 0.2.1
 
 - The Windows uninstaller removes only files recorded by the installer. A folder that merely contains `DC.exe` is left alone.

@@ -146,6 +146,16 @@ surrounding quotes. Use Ctrl+R after saving changes in the external editor.
   the parent row (`..`) is excluded. It is unavailable while transfers are queued.
   Shell commands run outside DockCommander's transfer queue; both panes refresh after
   the menu command returns. Linux keeps the existing DockCommander menu.
+- Each pane has its own Local | Remote switch. Local is the file list. Remote shows saved
+  connections, search, and Add connection. Connect opens SFTP, FTP, or FTPS in that pane.
+  WebDAV is listed but not connected yet. FTPS uses explicit TLS, and port 990 uses implicit TLS.
+  The password or private key can be remembered. It is encrypted for this user account and is not
+  written as plain text. If the connection fails, the sign-in window opens again. Anonymous FTP connects without a password prompt. Switching a pane to Local
+  keeps the session, and Remote returns to it. The other pane's Remote switch attaches that live
+  connection. A plus button beside the connection opens the saved connection list without closing
+  the session. The server key or certificate is confirmed once for that connection and asked again
+  only if it changes.
+  F3 can view a remote text file. Opening or editing in an external program still needs a local file.
 - Click selects the current row; double-click opens a file or directory.
 - Ctrl+click toggles a mark; Shift+click marks a range.
 - Right-click opens the action menu for the clicked row. Right-clicking a marked row
@@ -156,7 +166,9 @@ surrounding quotes. Use Ctrl+R after saving changes in the external editor.
 - Drop on a folder row (including `..`) to target that folder, or on other space in
   the file list to target the pane's current directory. The target is highlighted.
 - Dropping still asks for confirmation and uses normal conflicts, progress and cancellation.
-  Dragging within one pane and dragging out to other applications are not supported yet.
+  Dragging within one pane is not supported. Dragging out includes the local file paths,
+  so Explorer and other file managers can copy or move them. A move performed outside
+  DockCommander refreshes the source pane.
 - Drop local files/folders from Explorer or a Linux file manager into a pane or folder
   to copy them. External drops always copy (even with Shift); originals are retained.
   Confirmation, conflicts, progress and cancellation are the same as F5. Duplicate

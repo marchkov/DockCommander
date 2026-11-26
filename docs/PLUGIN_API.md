@@ -23,6 +23,7 @@ through `ITrashService`; the UI only checks the provider's `SupportsRecycle` cap
 
 - Paths are provider-owned strings. UI/services do not call local `Path.Combine`.
 - `NormalizePath` and `PathComparer` determine navigation identity.
+- `DisplayPath` is the path shown in the pane. The default returns the stored path.
 - `CombinePath(directory, name)` validates a single child name and cannot escape its parent.
 - `IsSameOrDescendant(path, ancestor)` prevents self-copy and recursive destinations.
 - `ListAsync` returns a snapshot, with the synthetic `..` entry first when a parent exists,
@@ -74,9 +75,10 @@ A callback may show a modal dialog. No file is silently overwritten.
   Providers should check cancellation at safe boundaries. Immediate interruption of one OS
   call and transactional rollback are not promised.
 
-Only transfers within the **same provider instance** are supported in this milestone.
-Future transfers between providers will need streaming or another generic capability contract.
-Do not add provider-specific branches to the service.
+Transfers between different provider instances read with `OpenReadAsync` and write with
+`WriteFileAsync`. The same instance still uses `TransferFileAsync` and `TryMoveDirectoryAsync`.
+A move across providers copies, then deletes the source. The service does not branch on
+protocol: a provider that cannot read or write file content fails with `NotSupportedException`.
 
 ## Optional file access
 
@@ -85,11 +87,15 @@ External file drops require `SupportsLocalFileDrop` (false by default) and
 owned by that provider. The local provider validates absolute paths and rejects roots
 and linked components. UI uses this capability without checking provider types.
 External drops only copy; the source application is never asked to remove its data.
+When `SupportsLocalFileDrop` is true, a drag that starts in DockCommander also publishes
+those local paths so another file manager can copy or move them.
 
 Default interface implementations keep providers without these capabilities usable:
 
 - `OpenReadAsync` returns a readable stream owned and disposed by the caller. The
   text viewer reads a bounded prefix. The default throws `NotSupportedException`.
+- `WriteFileAsync` creates or replaces one file from a caller-owned stream and does not
+  dispose that stream. The default throws `NotSupportedException`.
 - `GetLocalFilePathAsync` returns an existing local regular-file path for external
   applications, or null when unavailable. It does not imply download/upload support.
 - `RenameAsync` defaults to `NotSupportedException`.
@@ -108,5 +114,7 @@ and [transfer flags](https://learn.microsoft.com/windows/win32/api/shobjidl_core
 
 The local provider rejects mutations involving reparse points/symbolic links and filesystem roots.
 It is not a security boundary against a separate process racing filesystem changes.
-Other-platform trash adapters, authenticated sessions,
-cross-provider streams, provider identity in saved settings, and ABI versioning are deferred.
+SFTP is a normal provider. The application opens the session and keeps it until the window
+closes, including while a pane is showing Local. A remembered password or private key is
+encrypted for the user account and is not part of the provider path. Other-platform trash adapters,
+provider identity in saved settings, and ABI versioning are deferred.

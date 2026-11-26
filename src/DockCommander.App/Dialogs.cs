@@ -6,6 +6,7 @@ using Avalonia.Media;
 using Avalonia.Automation;
 using DockCommander.Core.Operations;
 using DockCommander.Core.Files;
+using DockCommander.Core.Connections;
 
 namespace DockCommander.App;
 
@@ -83,6 +84,159 @@ internal static class Dialogs
         return await window.ShowDialog<string?>(owner);
     }
 
+    public static async Task<SftpCredentials?> SftpLoginAsync(Window owner, ConnectionProfile profile, SftpCredentials? previous = null)
+    {
+        var key = profile.Authentication == AuthenticationKinds.PrivateKey;
+        var remembered = key
+            ? "A remembered private key stays encrypted for this user account."
+            : "A remembered password stays encrypted for this user account.";
+        var (window, body, buttons) = Create(owner, "Connect",
+            previous is null
+                ? $"Sign in to {profile.Name}. {remembered}"
+                : $"Could not connect to {profile.Name}. Enter the sign-in details again. {remembered}");
+        TextBox? password = null;
+        TextBox? keyPath = null;
+        TextBox? passphrase = null;
+        if (key)
+        {
+            keyPath = SecretField("SftpKeyPath", previous?.KeyPath ?? "", password: false);
+            passphrase = SecretField("SftpPassphrase", previous?.Passphrase ?? "", password: true);
+            Add("Private key file", keyPath);
+            Add("Key passphrase", passphrase);
+        }
+        else
+        {
+            password = SecretField("SftpPassword", previous?.Password ?? "", password: true);
+            Add("Password", password);
+        }
+        var remember = new CheckBox
+        {
+            Name = "RememberSecret",
+            IsChecked = previous?.Remember ?? true,
+            Content = key ? "Remember private key" : "Remember password",
+            Margin = new Thickness(0, 4, 0, 0)
+        };
+        body.Children.Add(remember);
+        var connect = new Button { Content = "Connect", IsDefault = true, MinWidth = 90 };
+        connect.Classes.Add("primary");
+        var cancel = new Button { Content = "Cancel", IsCancel = true, MinWidth = 90 };
+        connect.Click += (_, _) => window.Close(new SftpCredentials(
+            profile.Authentication, password?.Text ?? "", keyPath?.Text ?? "", passphrase?.Text ?? "", remember.IsChecked == true));
+        cancel.Click += (_, _) => window.Close(null);
+        buttons.Children.Add(connect); buttons.Children.Add(cancel); body.Children.Add(buttons);
+        window.KeyDown += (_, e) => { if (e.Key == Key.Escape) { e.Handled = true; window.Close(null); } };
+        window.Opened += (_, _) =>
+        {
+            var field = key ? keyPath! : password!;
+            field.Focus();
+            field.SelectAll();
+        };
+        return await window.ShowDialog<SftpCredentials?>(owner);
+
+        void Add(string caption, Control control)
+        {
+            var label = new TextBlock { Text = caption, FontSize = 12 };
+            label.Classes.Add("muted");
+            body.Children.Add(label);
+            body.Children.Add(control);
+        }
+    }
+
+    private static TextBox SecretField(string name, string value, bool password)
+    {
+        var box = new TextBox { Name = name, Text = value };
+        if (password) box.PasswordChar = '●';
+        box.Classes.Add("path-field");
+        return box;
+    }
+
+    public static async Task<ConnectionEditResult?> EditConnectionAsync(Window owner, ConnectionProfile? existing)
+    {
+        var (window, body, buttons) = Create(owner, existing is null ? "Add connection" : "Edit connection",
+            "The password is asked on Connect unless you choose to remember it. A remembered password or private key is encrypted for this user account.");
+        var name = Field("Name", existing?.Name ?? "");
+        var protocol = new ComboBox { ItemsSource = ConnectionProtocols.All, SelectedItem = existing?.Protocol ?? ConnectionProtocols.Sftp };
+        var host = Field("Host", existing?.Host ?? "");
+        var port = Field("Port", existing?.Port?.ToString() ?? ConnectionProtocols.DefaultPort(existing?.Protocol ?? ConnectionProtocols.Sftp)?.ToString() ?? "");
+        var username = Field("Username", existing?.Username ?? "");
+        var initialPath = Field("Initial path", existing?.InitialPath ?? "");
+        initialPath.PlaceholderText = "Remote folder, optional";
+        var authentication = new ComboBox { ItemsSource = AuthenticationKinds.All, SelectedItem = existing?.Authentication ?? AuthenticationKinds.Password };
+        var error = new TextBlock { TextWrapping = TextWrapping.Wrap };
+        error.Classes.Add("muted");
+        string? previousDefault = port.Text;
+        protocol.SelectionChanged += (_, _) =>
+        {
+            var next = ConnectionProtocols.DefaultPort(protocol.SelectedItem as string ?? "")?.ToString() ?? "";
+            if (string.IsNullOrWhiteSpace(port.Text) || port.Text == previousDefault) port.Text = next;
+            previousDefault = next;
+        };
+        foreach (var (caption, control) in new (string, Control)[]
+        {
+            ("Name", name), ("Protocol", protocol), ("Host", host), ("Port", port),
+            ("Username", username), ("Initial path", initialPath), ("Authentication", authentication)
+        })
+        {
+            body.Children.Add(new TextBlock { Text = caption, FontSize = 12 });
+            ((TextBlock)body.Children[^1]).Classes.Add("muted");
+            body.Children.Add(control);
+        }
+        body.Children.Add(error);
+        var save = new Button { Content = "Save", IsDefault = true, MinWidth = 90 };
+        save.Classes.Add("primary");
+        var cancel = new Button { Content = "Cancel", IsCancel = true, MinWidth = 90 };
+        cancel.Click += (_, _) => window.Close(null);
+        save.Click += (_, _) =>
+        {
+            int? portValue = null;
+            if (!string.IsNullOrWhiteSpace(port.Text))
+            {
+                if (!int.TryParse(port.Text, out var parsed)) { error.Text = "Port must be between 1 and 65535."; return; }
+                portValue = parsed;
+            }
+            var protocolName = protocol.SelectedItem as string ?? "";
+            var hostName = (host.Text ?? "").Trim();
+            var sameServer = existing is not null
+                && string.Equals(existing.Protocol, protocolName, StringComparison.OrdinalIgnoreCase)
+                && string.Equals(existing.Host, hostName, StringComparison.OrdinalIgnoreCase)
+                && (existing.Port ?? ConnectionProtocols.DefaultPort(existing.Protocol)) == (portValue ?? ConnectionProtocols.DefaultPort(protocolName));
+            var profile = new ConnectionProfile(
+                existing?.Id ?? Guid.NewGuid().ToString("n"),
+                name.Text ?? "",
+                protocolName,
+                host.Text ?? "",
+                portValue,
+                username.Text ?? "",
+                initialPath.Text ?? "",
+                authentication.SelectedItem as string ?? "",
+                sameServer ? existing!.HostFingerprint : null).Normalized();
+            if (ConnectionProfile.Validate(profile) is { } message) { error.Text = message; return; }
+            window.Close(new ConnectionEditResult(profile, false));
+        };
+        if (existing is not null)
+        {
+            var remove = new Button { Content = "Remove", MinWidth = 90 };
+            remove.Classes.Add("danger");
+            remove.Click += async (_, _) =>
+            {
+                if (await ConfirmAsync(window, "Remove connection", $"Remove {existing.Name}?", "Remove"))
+                    window.Close(new ConnectionEditResult(null, true));
+            };
+            buttons.Children.Add(remove);
+        }
+        buttons.Children.Add(save); buttons.Children.Add(cancel); body.Children.Add(buttons);
+        window.KeyDown += (_, e) => { if (e.Key == Key.Escape) { e.Handled = true; window.Close(null); } };
+        window.Opened += (_, _) => { name.Focus(); name.SelectAll(); };
+        return await window.ShowDialog<ConnectionEditResult?>(owner);
+    }
+
+    private static TextBox Field(string name, string value)
+    {
+        var box = new TextBox { Name = name.Replace(" ", ""), Text = value };
+        box.Classes.Add("path-field");
+        return box;
+    }
+
     public static async Task<bool> ConfirmAsync(Window owner, string title, string message, string accept)
     {
         var (window, body, buttons) = Create(owner, title, message);
@@ -131,3 +285,5 @@ internal static class Dialogs
         return result;
     }
 }
+
+internal sealed record ConnectionEditResult(ConnectionProfile? Profile, bool Removed);

@@ -4,6 +4,7 @@ using Avalonia.Headless;
 using Avalonia.Headless.XUnit;
 using Avalonia.Input;
 using Avalonia.Input.Raw;
+using Avalonia.Platform.Storage;
 using Avalonia.Threading;
 using Avalonia.VisualTree;
 using DockCommander.App;
@@ -49,7 +50,7 @@ public sealed class PaneTests
             Assert.Equal(locations.Last().RootPath, requested);
             window.Width = 1800; window.UpdateLayout(); Dispatcher.UIThread.RunJobs(); window.UpdateLayout();
             Assert.False(more.IsVisible);
-            Assert.Equal(8, pane.GetVisualDescendants().OfType<Button>().Count(b => b.IsVisible && b != more));
+            Assert.Equal(8, pane.GetVisualDescendants().OfType<Button>().Count(b => b.IsVisible && b != more && b.Name is not ("LocalMode" or "RemoteMode")));
         }
         finally { window.Close(); }
     }
@@ -73,6 +74,28 @@ public sealed class PaneTests
         Assert.True(destination.CanAcceptDrop(payload, temp.Folder("target")));
         destination.IsEnabled = false;
         Assert.False(destination.CanAcceptDrop(payload, temp.Folder("target")));
+    }
+
+    [AvaloniaFact]
+    public async Task OutgoingDragPublishesLocalFilesAndFolders()
+    {
+        using var temp = new ScratchDirectory();
+        var file = temp.File("a.txt");
+        var folder = temp.Folder("dir");
+        var provider = new LocalFileSystemProvider();
+        var pane = new FilePane(provider, temp.Root);
+        var window = new Window { Content = pane, Width = 700, Height = 500 };
+        window.Show();
+        try
+        {
+            var entries = new[] { (await provider.GetEntryAsync(file))!, (await provider.GetEntryAsync(folder))! };
+            var data = new DataTransfer();
+            await pane.AddLocalDragItemsAsync(data, entries);
+            var paths = data.TryGetFiles()?.Select(item => item.TryGetLocalPath()).ToArray();
+            Assert.NotNull(paths);
+            Assert.Equal(new[] { file, folder }, paths);
+        }
+        finally { window.Close(); }
     }
 
     [AvaloniaFact]

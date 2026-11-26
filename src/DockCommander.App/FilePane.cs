@@ -10,6 +10,7 @@ using Avalonia.Media;
 using Avalonia.Threading;
 using Avalonia.VisualTree;
 using Avalonia.Platform.Storage;
+using DockCommander.Core.Connections;
 using DockCommander.Core.Files;
 
 namespace DockCommander.App;
@@ -49,44 +50,68 @@ internal sealed class FilePane : UserControl
     private readonly Button _moreLocations = new() { Name = "MoreLocations", Content = "Ещё ▾", IsVisible = false,
         Width = 76, Padding = new Thickness(7, 4), MinHeight = 28 };
     private readonly Border _frame;
+    private readonly Grid _local;
+    private readonly RemotePaneView _remote = new();
+    private readonly Button _localMode = new() { Name = "LocalMode", Content = "Local" };
+    private readonly Button _remoteMode = new() { Name = "RemoteMode", Content = "Remote" };
+    private readonly Button _savedConnections = new()
+    {
+        Name = "SavedConnections", Content = UiIcons.Create("add", size: 14), IsVisible = false,
+        Width = 28, Height = 28, MinHeight = 0, Padding = new Thickness(0),
+        VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(4, 0, 0, 0)
+    };
     private readonly TextBlock _count = new() { FontSize = 12 };
-    private readonly TextBlock _activity = new() { FontSize = 10, FontWeight = FontWeight.SemiBold, VerticalAlignment = VerticalAlignment.Center };
-    private readonly string _label;
     private readonly List<(string Path, Button Button)> _locationButtons = [];
     private List<FileRow> _rows = [];
     private int _anchor;
     private HashSet<string>? _rangeMarkBase;
     private Task _navigation = Task.CompletedTask;
-    public IFileSystemProvider Provider { get; }
+    private readonly IFileSystemProvider _homeProvider;
+    private IFileSystemProvider? _remoteProvider;
+    private string? _remotePath;
+    private string _localPath;
+    public IFileSystemProvider Provider { get; private set; }
+    public IFileSystemProvider LocalProvider => _homeProvider;
+    public string SavedPath => _localPath;
+    public string CurrentDisplayPath => Provider.DisplayPath(CurrentPath);
+
+    public void UseProvider(IFileSystemProvider provider) => Provider = provider;
     public string CurrentPath { get; private set; }
     public event Action<FilePane>? Activated;
     public event Action<FilePane, string>? NavigateRequested;
     public event Action<FilePane>? OpenRequested;
+    public event Action? AddConnectionRequested;
+    public event Action<ConnectionProfile>? EditConnectionRequested;
+    public event Action<ConnectionProfile>? ConnectRequested;
+    public event Action<FilePane>? ReturnedToLocal;
+    public event Action<FilePane>? RemoteRestored;
+    public event Action<FilePane>? RemoteWithoutSession;
+    public IFileSystemProvider? SessionProvider => _remoteProvider;
+    public string SessionPath => _remotePath ?? CurrentPath;
+    public bool IsRemote { get; private set; }
 
     public FilePane(IFileSystemProvider provider, string path, string label = "FILES")
     {
-        Provider = provider; CurrentPath = path; _label = label;
+        _homeProvider = provider;
+        _localPath = path;
+        Provider = provider; CurrentPath = path;
+        _ = label;
         _list.Classes.Add("file-list");
         _path.Classes.Add("path-field");
         _count.Classes.Add("muted");
-        _activity.Classes.Add("muted");
-        _activity.Text = label;
         ToolTip.SetTip(_path, "Current path · Ctrl+L to edit");
         _list.SetValue(ScrollViewer.HorizontalScrollBarVisibilityProperty, Avalonia.Controls.Primitives.ScrollBarVisibility.Disabled);
         _path.Text = path;
-        var grid = new Grid { RowDefinitions = new RowDefinitions("Auto,Auto,*,Auto") };
-        var locationsRow = new Grid { ColumnDefinitions = new ColumnDefinitions("*,Auto") };
+        var grid = new Grid { RowDefinitions = new RowDefinitions("Auto,*,Auto") };
+        var locationsRow = new Grid { ColumnDefinitions = new ColumnDefinitions("*,Auto,Auto") };
         _locationHost.Children.Add(new Border { Child = _locations, ClipToBounds = true });
         _moreLocations.Classes.Add("flat");
         Grid.SetColumn(_moreLocations, 1); _locationHost.Children.Add(_moreLocations);
         _moreLocations.Click += (_, _) => _moreLocations.ContextMenu?.Open(_moreLocations);
         _locationHost.SizeChanged += (_, _) => ArrangeLocations();
         locationsRow.Children.Add(_locationHost);
-        Grid.SetColumn(_activity, 1); locationsRow.Children.Add(_activity);
-        var top = new StackPanel(); top.Children.Add(locationsRow); top.Children.Add(_path);
-        var topBorder = new Border { Child = top }; topBorder.Classes.Add("pane-top"); Add(topBorder, 0);
         var header = new Border { Child = Row("", "Name", "Type", "Size", "Modified", true) };
-        header.Classes.Add("column-header"); Add(header, 1);
+        header.Classes.Add("column-header"); Add(header, 0);
         _list.ItemTemplate = new FuncDataTemplate<FileRow>((row, _) =>
         {
             if (row is null) return new TextBlock();
@@ -100,10 +125,47 @@ internal sealed class FilePane : UserControl
             ToolTip.SetTip(cells, entry.FullPath);
             return cells;
         });
-        Add(_list, 2);
-        var footer = new Border { Child = _count }; footer.Classes.Add("pane-footer"); Add(footer, 3);
-        _frame = new Border { Child = grid }; _frame.Classes.Add("pane-frame");
+        Add(_list, 1);
+        var footer = new Border { Child = _count }; footer.Classes.Add("pane-footer"); Add(footer, 2);
+        _local = grid;
+        foreach (var mode in new[] { _localMode, _remoteMode })
+        {
+            mode.Classes.Add("flat");
+            mode.FontSize = 10;
+            mode.FontWeight = FontWeight.SemiBold;
+            mode.Padding = new Thickness(4, 0);
+            mode.MinHeight = 0;
+            mode.Height = 18;
+            mode.VerticalAlignment = VerticalAlignment.Center;
+        }
+        _savedConnections.Classes.Add("flat");
+        _savedConnections.Click += (_, _) => { Activated?.Invoke(this); ShowCatalog(); };
+        ToolTip.SetTip(_savedConnections, "Saved connections");
+        Grid.SetColumn(_savedConnections, 1);
+        locationsRow.Children.Add(_savedConnections);
+        _localMode.Click += (_, _) => ShowLocal();
+        _remoteMode.Click += (_, _) =>
+        {
+            if (_remoteProvider is not null) ShowRemoteSession();
+            else if (RemoteWithoutSession is { } requested) requested(this);
+            else ShowCatalog();
+        };
+        _remote.AddRequested += () => AddConnectionRequested?.Invoke();
+        _remote.EditRequested += profile => EditConnectionRequested?.Invoke(profile);
+        _remote.ConnectRequested += profile => ConnectRequested?.Invoke(profile);
+        var modes = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 2, VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(8, 0, 0, 0) };
+        modes.Children.Add(_localMode); modes.Children.Add(_remoteMode);
+        Grid.SetColumn(modes, 2); locationsRow.Children.Add(modes);
+        var top = new StackPanel(); top.Children.Add(locationsRow); top.Children.Add(_path);
+        var topBorder = new Border { Child = top }; topBorder.Classes.Add("pane-top");
+        var pages = new Grid();
+        pages.Children.Add(_local); pages.Children.Add(_remote);
+        var shell = new Grid { RowDefinitions = new RowDefinitions("Auto,*") };
+        shell.Children.Add(topBorder);
+        Grid.SetRow(pages, 1); shell.Children.Add(pages);
+        _frame = new Border { Child = shell }; _frame.Classes.Add("pane-frame");
         Content = _frame;
+        ShowFiles(false);
         GotFocus += (_, _) => Activated?.Invoke(this);
         _path.KeyDown += (_, e) =>
         {
@@ -209,11 +271,81 @@ internal sealed class FilePane : UserControl
         return $"{value:0.#} {units[unit]}";
     }
 
+    public void OpenRemote(IFileSystemProvider provider)
+    {
+        ArgumentNullException.ThrowIfNull(provider);
+        if (ReferenceEquals(Provider, _homeProvider)) _localPath = CurrentPath;
+        _remoteProvider = provider;
+        _remotePath = null;
+        Provider = provider;
+        ShowFiles(true);
+    }
+
+    public void CloseRemote()
+    {
+        _remoteProvider = null;
+        _remotePath = null;
+        if (!ReferenceEquals(Provider, _homeProvider)) Provider = _homeProvider;
+        ShowFiles(false);
+    }
+
+    public void ShowConnectionList() => ShowCatalog();
+
+    private void ShowLocal()
+    {
+        if (_remoteProvider is not null && !ReferenceEquals(Provider, _homeProvider))
+        {
+            _remotePath = CurrentPath;
+            Provider = _homeProvider;
+            ShowFiles(false);
+            ReturnedToLocal?.Invoke(this);
+            return;
+        }
+        ShowFiles(false);
+    }
+
+    private void ShowRemoteSession()
+    {
+        if (_remoteProvider is null)
+        {
+            ShowCatalog();
+            return;
+        }
+        var restore = !ReferenceEquals(Provider, _remoteProvider);
+        Provider = _remoteProvider;
+        ShowFiles(true);
+        if (restore) RemoteRestored?.Invoke(this);
+    }
+
+    private void ShowCatalog()
+    {
+        IsRemote = true;
+        _local.IsVisible = false;
+        _remote.IsVisible = true;
+        _localMode.Classes.Set("chosen", false);
+        _remoteMode.Classes.Set("chosen", true);
+        _remote.RefreshConnections();
+        UpdateSessionButton();
+    }
+
+    private void ShowFiles(bool remoteSession)
+    {
+        IsRemote = false;
+        _local.IsVisible = true;
+        _remote.IsVisible = false;
+        _localMode.Classes.Set("chosen", !remoteSession);
+        _remoteMode.Classes.Set("chosen", remoteSession);
+        UpdateSessionButton();
+    }
+
+    private void UpdateSessionButton() =>
+        _savedConnections.IsVisible = _remoteProvider is not null && !ReferenceEquals(Provider, _homeProvider);
+
+    public void SetConnections(IReadOnlyList<ConnectionProfile> connections) => _remote.SetConnections(connections);
+
     public void SetActive(bool active)
     {
         _frame.Classes.Set("active", active);
-        _activity.Classes.Set("accent", active);
-        _activity.Text = active ? $"{_label} · ACTIVE" : _label;
     }
 
     public async Task LoadLocationsAsync()
@@ -326,7 +458,8 @@ internal sealed class FilePane : UserControl
         var index = same ? _list.SelectedIndex : 0;
         var entries = await Provider.ListAsync(normalized);
         // Commit only after a successful listing; a bad path never replaces the visible pane state.
-        CurrentPath = normalized; _path.Text = normalized;
+        CurrentPath = normalized; _path.Text = Provider.DisplayPath(normalized);
+        if (ReferenceEquals(Provider, _homeProvider)) _localPath = normalized;
         UpdateLocationSelection();
         _rows = entries.Select(entry => new FileRow(entry) { Marked = same && marked.Contains(entry.FullPath) }).ToList();
         _list.ItemsSource = _rows;
@@ -353,12 +486,17 @@ internal sealed class FilePane : UserControl
         UpdateCount();
     }
 
-    public void FocusPath() { _path.Focus(); _path.SelectAll(); }
-    public FileEntry? CurrentEntry => (_list.SelectedItem as FileRow)?.Entry;
+    public void FocusPath()
+    {
+        if (IsRemote) { _remote.FocusSearch(); return; }
+        _path.Focus(); _path.SelectAll();
+    }
+    public FileEntry? CurrentEntry => IsRemote ? null : (_list.SelectedItem as FileRow)?.Entry;
     public IReadOnlyList<FileEntry> OperationEntries
     {
         get
         {
+            if (IsRemote) return [];
             var marked = _rows.Where(x => x.Marked && x.Entry.Name != "..").Select(x => x.Entry).ToArray();
             return marked.Length > 0 ? marked : CurrentEntry is { Name: not ".." } current ? [current] : [];
         }
@@ -366,6 +504,7 @@ internal sealed class FilePane : UserControl
 
     public void FocusList()
     {
+        if (IsRemote) { _remote.FocusList(); return; }
         var index = _list.SelectedIndex;
         _list.Focus();
         _list.SelectedIndex = index;
@@ -469,11 +608,35 @@ internal sealed class FilePane : UserControl
         _dragPress = null; _dragRow = null;
         var entries = EntriesForDrag(row.Entry);
         if (entries.Count == 0) return;
-        var data = new DataTransfer(); data.Add(DataTransferItem.Create(DragFormat, new DraggedEntries(this, entries)));
-        IsDragging = true;
-        try { await DragDrop.DoDragDropAsync(press, data, DragDropEffects.Copy | DragDropEffects.Move); }
+        try
+        {
+            var data = new DataTransfer();
+            data.Add(DataTransferItem.Create(DragFormat, new DraggedEntries(this, entries)));
+            await AddLocalDragItemsAsync(data, entries);
+            IsDragging = true;
+            var result = await DragDrop.DoDragDropAsync(press, data, DragDropEffects.Copy | DragDropEffects.Move);
+            if (result == DragDropEffects.Move) await RefreshAsync();
+        }
         catch (Exception ex) { InteractionError?.Invoke(ex.Message); }
         finally { IsDragging = false; ClearDropHighlight(); }
+    }
+
+    internal async Task AddLocalDragItemsAsync(DataTransfer data, IReadOnlyList<FileEntry> entries)
+    {
+        if (!Provider.SupportsLocalFileDrop) return;
+        var storage = TopLevel.GetTopLevel(this)?.StorageProvider;
+        if (storage is null) return;
+        foreach (var entry in entries)
+        {
+            if (entry.Name == ".." || string.IsNullOrWhiteSpace(entry.FullPath)) continue;
+            IStorageItem? item = entry.IsDirectory
+                ? await storage.TryGetFolderFromPathAsync(entry.FullPath)
+                : await storage.TryGetFileFromPathAsync(entry.FullPath);
+            item ??= entry.IsDirectory
+                ? await storage.TryGetFileFromPathAsync(entry.FullPath)
+                : await storage.TryGetFolderFromPathAsync(entry.FullPath);
+            if (item is not null) data.Add(DataTransferItem.Create(DataFormat.File, item));
+        }
     }
 
     internal bool CanAcceptDrop(DraggedEntries payload, string directory) => IsEffectivelyEnabled &&

@@ -301,6 +301,38 @@ public sealed class LocalFileSystemProvider(ITrashService? trash = null) : IFile
         if (IsSameOrDescendant(destination, source)) throw new IOException("The destination must not be the source or a folder inside it.");
     }
 
+    public Task WriteFileAsync(string destinationPath, Stream content, bool overwrite, IProgress<long>? bytesCopied,
+        CancellationToken cancellationToken = default) => Task.Run(async () =>
+    {
+        var destination = NormalizePath(destinationPath);
+        ValidateMutationPath(destination);
+        cancellationToken.ThrowIfCancellationRequested();
+        var temporary = Path.Combine(Path.GetDirectoryName(destination)!, $".dc-{Guid.NewGuid():N}.tmp");
+        try
+        {
+            await using (var target = new FileStream(temporary, FileMode.CreateNew, FileAccess.Write, FileShare.None,
+                131072, FileOptions.Asynchronous | FileOptions.SequentialScan))
+            {
+                var buffer = new byte[131072];
+                long copied = 0;
+                int read;
+                while ((read = await content.ReadAsync(buffer, cancellationToken)) != 0)
+                {
+                    await target.WriteAsync(buffer.AsMemory(0, read), cancellationToken);
+                    copied += read;
+                    bytesCopied?.Report(copied);
+                }
+                await target.FlushAsync(cancellationToken);
+            }
+            cancellationToken.ThrowIfCancellationRequested();
+            File.Move(temporary, destination, overwrite);
+        }
+        finally
+        {
+            if (File.Exists(temporary)) File.Delete(temporary);
+        }
+    }, cancellationToken);
+
     public Task<Stream> OpenReadAsync(string path, CancellationToken cancellationToken = default) => Task.Run<Stream>(() =>
     {
         var full = NormalizePath(path);

@@ -35,16 +35,14 @@ public sealed class FileOperationService
         CancellationToken cancellationToken = default, IProgress<TransferProgress>? transferProgress = null,
         IProgress<BatchTransferProgress>? batchProgress = null)
     {
-        if (!ReferenceEquals(sourceProvider, destinationProvider))
-            throw new NotSupportedException("Transfers between different providers are not supported yet.");
         await _gate.WaitAsync(cancellationToken);
         try
         {
             var completed = 0;
             var skipped = 0;
-            var provider = sourceProvider;
-            var children = new Dictionary<string, FileEntry[]>(provider.PathComparer);
-            var totals = new Dictionary<string, (long Bytes, int Files)>(provider.PathComparer);
+            var sameProvider = ReferenceEquals(sourceProvider, destinationProvider);
+            var children = new Dictionary<string, FileEntry[]>(sourceProvider.PathComparer);
+            var totals = new Dictionary<string, (long Bytes, int Files)>(sourceProvider.PathComparer);
             long totalBytes = 0, processedBytes = 0;
             int totalFiles = 0, processedFiles = 0, skippedFiles = 0;
             var sizesKnown = true;
@@ -83,7 +81,7 @@ public sealed class FileOperationService
                 (long Bytes, int Files) sum = (Math.Max(0, entry.Size ?? 0), 1);
                 if (entry.IsDirectory)
                 {
-                    var listed = (await provider.ListAsync(entry.FullPath, cancellationToken)).Where(e => e.Name != "..").ToArray();
+                    var listed = (await sourceProvider.ListAsync(entry.FullPath, cancellationToken)).Where(e => e.Name != "..").ToArray();
                     children[entry.FullPath] = listed;
                     sum = (0, 0);
                     foreach (var child in listed)
@@ -105,10 +103,10 @@ public sealed class FileOperationService
                     Account(source, skipped: true);
                     return false;
                 }
-                var destination = provider.CombinePath(destinationParent, name);
+                var destination = destinationProvider.CombinePath(destinationParent, name);
                 CheckDestination();
                 var overwrite = false;
-                while (await provider.GetEntryAsync(destination, cancellationToken) is { } existing)
+                while (await destinationProvider.GetEntryAsync(destination, cancellationToken) is { } existing)
                 {
                     if (existing.IsLink)
                     {
@@ -123,7 +121,7 @@ public sealed class FileOperationService
                             Account(source, skipped: true);
                             return false;
                         case ConflictAction.Rename:
-                            destination = provider.CombinePath(destinationParent, resolution.NewName ?? "");
+                            destination = destinationProvider.CombinePath(destinationParent, resolution.NewName ?? "");
                             CheckDestination();
                             continue;
                         case ConflictAction.Overwrite:
@@ -135,8 +133,8 @@ public sealed class FileOperationService
                     }
                     break;
                 }
-                if (move && source.IsDirectory && !overwrite &&
-                    await provider.TryMoveDirectoryAsync(source.FullPath, destination, cancellationToken))
+                if (sameProvider && move && source.IsDirectory && !overwrite &&
+                    await sourceProvider.TryMoveDirectoryAsync(source.FullPath, destination, cancellationToken))
                 {
                     Account(source, skipped: false);
                     return true;
@@ -146,29 +144,36 @@ public sealed class FileOperationService
                 {
                     transferProgress?.Report(new(source.FullPath, 0, source.Size));
                     ReportBatch(source.FullPath);
-                    await provider.TransferFileAsync(source.FullPath, destination, overwrite, move,
-                        new InlineProgress<long>(bytes =>
-                        {
-                            transferProgress?.Report(new(source.FullPath, bytes, source.Size));
-                            ReportBatch(source.FullPath, Math.Clamp(bytes, 0, Math.Max(0, source.Size ?? 0)));
-                        }), cancellationToken);
+                    var fileProgress = new InlineProgress<long>(bytes =>
+                    {
+                        transferProgress?.Report(new(source.FullPath, bytes, source.Size));
+                        ReportBatch(source.FullPath, Math.Clamp(bytes, 0, Math.Max(0, source.Size ?? 0)));
+                    });
+                    if (sameProvider)
+                        await sourceProvider.TransferFileAsync(source.FullPath, destination, overwrite, move, fileProgress, cancellationToken);
+                    else
+                    {
+                        await using (var input = await sourceProvider.OpenReadAsync(source.FullPath, cancellationToken))
+                            await destinationProvider.WriteFileAsync(destination, input, overwrite, fileProgress, cancellationToken);
+                        if (move) await sourceProvider.DeleteAsync(source.FullPath, DeleteMode.Permanent, cancellationToken);
+                    }
                     processedBytes += Math.Max(0, source.Size ?? 0); processedFiles++;
                     ReportBatch(source.FullPath);
                     transferProgress?.Report(new(source.FullPath, source.Size ?? 0, source.Size));
                     return true;
                 }
-                await provider.CreateDirectoryAsync(destination, cancellationToken);
+                await destinationProvider.CreateDirectoryAsync(destination, cancellationToken);
                 var allTransferred = true;
                 var listed = children.TryGetValue(source.FullPath, out var planned) ? planned :
-                    (await provider.ListAsync(source.FullPath, cancellationToken)).Where(x => x.Name != "..").ToArray();
+                    (await sourceProvider.ListAsync(source.FullPath, cancellationToken)).Where(x => x.Name != "..").ToArray();
                 foreach (var child in listed)
                     allTransferred &= await TransferEntry(child, destination, child.Name);
-                if (move && allTransferred) await provider.RemoveEmptyDirectoryAsync(source.FullPath, cancellationToken);
+                if (move && allTransferred) await sourceProvider.RemoveEmptyDirectoryAsync(source.FullPath, cancellationToken);
                 return allTransferred;
 
                 void CheckDestination()
                 {
-                    if (provider.IsSameOrDescendant(destination, source.FullPath))
+                    if (sourceProvider.CanHandle(destination) && sourceProvider.IsSameOrDescendant(destination, source.FullPath))
                         throw new IOException("The destination must not be the source or a folder inside it.");
                 }
 
