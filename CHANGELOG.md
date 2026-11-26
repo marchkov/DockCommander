@@ -8,7 +8,7 @@
 - SFTP opens in the pane that requested it. Copy and move use the existing queue.
 - Copy and move can run between two different file-system providers through the same queue.
   The pane can replace its provider without a separate window.
-- Each pane can switch between Local and Remote. Remote lists saved connections and does not open a network session yet.
+- Each pane can switch between Local and Remote. Remote lists saved connections and opens supported protocols in that pane.
 - Drag local files and folders from DockCommander into Explorer and other file managers.
   A move completed by the other application refreshes the source pane.
 
