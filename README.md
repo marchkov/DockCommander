@@ -4,7 +4,11 @@ Minimal, keyboard-first, dual-pane file manager inspired by Total Commander's wo
 Windows is the first supported platform. C# / .NET 10 and Avalonia 12.1.2 keep the UI and
 filesystem contracts portable. The Windows executable is **DC.exe**.
 
-Theme previews with sample files: [Light](docs/images/light.png) · [Dark](docs/images/dark.png).
+## Screenshots
+
+DockCommander in dark and light themes.
+
+![DockCommander dark and light themes](docs/images/dockcommander-themes.png)
 
 ## Build and run
 
