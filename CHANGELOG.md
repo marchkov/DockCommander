@@ -2,6 +2,37 @@
 
 ## 0.3.0-alpha.2
 
+### What's new
+
+DockCommander now includes experimental native macOS support for Apple Silicon.
+
+- Native macOS Trash integration.
+- Safe handling of standard macOS system path aliases.
+- Volume-aware filesystem case sensitivity.
+- Improved credential-storage security on macOS and Linux.
+- macOS Home, Root and mounted volume locations.
+- Self-contained macOS ARM64 DMG package.
+- Automated regression testing on Windows, Linux and macOS.
+
+### Supported platforms
+
+- Windows x64
+- Linux x64
+- macOS ARM64 (Apple Silicon, experimental)
+
+### Known limitations
+
+- This is an Alpha release.
+- Windows direct-download binaries are not digitally signed.
+- The macOS application is ad-hoc signed but not notarized.
+- macOS may require explicit approval through Privacy & Security.
+- Finder drag-and-drop and some macOS-specific interactions still require real-world testing.
+- Intel Mac is not supported by the current distribution.
+
+For macOS installation and testing instructions, refer to [docs/MACOS.md](docs/MACOS.md).
+
+### Changes
+
 - Experimental Apple Silicon support. The macOS build is a self-contained `osx-arm64` app, ad-hoc signed and not notarized. It is not a stable release and does not support Intel Macs. See [docs/MACOS.md](docs/MACOS.md).
 - `/tmp`, `/var` and `/etc` are accepted when those macOS aliases really point at `/private/tmp`, `/private/var` and `/private/etc`. Other symbolic links and junctions are still rejected. Windows and Linux path checks are unchanged.
 - Saved connection secrets on macOS and Linux use an owner-only key file (`0600`) and directory (`0700`). The files are created with those permissions, existing files are tightened, and a save fails instead of leaving them readable by other accounts. Windows still uses DPAPI. There is no macOS Keychain integration.

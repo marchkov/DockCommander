@@ -16,6 +16,7 @@ on:
         default: ""
   push:
     branches: [main]
+    tags: ["v*"]
 
 permissions:
   contents: read
@@ -47,6 +48,9 @@ jobs:
           sha=$(git -C source rev-parse HEAD)
           echo "Application source: $sha"
           echo "SOURCE_SHA=$sha" >> "$GITHUB_ENV"
+          case "$GITHUB_REF" in
+            refs/tags/v*) test "$sha" = "$GITHUB_SHA" ;;
+          esac
       - uses: actions/setup-dotnet@v4
         with:
           dotnet-version: 10.0.x
@@ -67,15 +71,41 @@ jobs:
             artifacts/DockCommander-macos-arm64-EXPERIMENTAL.txt
             artifacts/startup-smoke.log
           if-no-files-found: error
-      - name: Attach to an existing release
-        if: github.event_name == 'workflow_dispatch' && github.event.inputs.release_tag != ''
+      - name: Publish the macOS artifact
+        if: startsWith(github.ref, 'refs/tags/v') || (github.event_name == 'workflow_dispatch' && github.event.inputs.release_tag != '')
         env:
           GH_TOKEN: ${{ github.token }}
-          RELEASE_TAG: ${{ github.event.inputs.release_tag }}
+          RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.release_tag || github.ref_name }}
         run: |
           set -eu
-          gh release upload "$RELEASE_TAG" \
-            artifacts/DockCommander-macos-arm64.dmg \
-            artifacts/DockCommander-macos-arm64.dmg.sha256 \
-            artifacts/DockCommander-macos-arm64-EXPERIMENTAL.txt \
-            --clobber
+          ready=0
+          for _ in $(seq 1 60); do
+            if gh release view "$RELEASE_TAG" --json assets --jq '.assets[].name' > assets.txt 2>/dev/null \
+              && grep -qx "DockCommander-win-x64.zip" assets.txt \
+              && grep -qx "DockCommander-linux-x64.tar.gz" assets.txt \
+              && grep -qx "DockCommander-linux-x64.deb" assets.txt; then
+              ready=1
+              break
+            fi
+            sleep 20
+          done
+          test "$ready" = 1
+          gh release upload "$RELEASE_TAG" artifacts/DockCommander-macos-arm64.dmg --clobber
+          rm -rf published
+          mkdir published
+          gh release download "$RELEASE_TAG" -D published --clobber \
+            -p "DockCommander-win-x64.zip" \
+            -p "DockCommander-linux-x64.tar.gz" \
+            -p "DockCommander-linux-x64.deb" \
+            -p "DockCommander-macos-arm64.dmg"
+          cmp artifacts/DockCommander-macos-arm64.dmg published/DockCommander-macos-arm64.dmg
+          (
+            cd published
+            sha256sum \
+              DockCommander-win-x64.zip \
+              DockCommander-linux-x64.tar.gz \
+              DockCommander-linux-x64.deb \
+              DockCommander-macos-arm64.dmg \
+              > SHA256SUMS.txt
+          )
+          gh release upload "$RELEASE_TAG" published/SHA256SUMS.txt --clobber

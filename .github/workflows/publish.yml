@@ -89,9 +89,41 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
+          set -eu
+          version="${GITHUB_REF_NAME#v}"
+          awk -v version="$version" '
+            $0 == "## " version { found = 1; next }
+            found && /^## / { exit }
+            found { print }
+          ' CHANGELOG.md > notes.md
+          test -s notes.md
+          prerelease=""
+          case "$version" in
+            *-alpha*|*-beta*) prerelease="--prerelease" ;;
+          esac
           gh release create "$GITHUB_REF_NAME" \
             dist/DockCommander-win-x64/DockCommander-win-x64.zip \
             dist/DockCommander-linux-x64/DockCommander-linux-x64.tar.gz \
             dist/DockCommander-linux-x64-deb/DockCommander-linux-x64.deb \
-            --title "$GITHUB_REF_NAME" \
-            --notes-file CHANGELOG.md
+            --title "DockCommander $version" \
+            --notes-file notes.md \
+            $prerelease
+          rm -rf published
+          mkdir published
+          gh release download "$GITHUB_REF_NAME" -D published \
+            --clobber \
+            -p "DockCommander-win-x64.zip" \
+            -p "DockCommander-linux-x64.tar.gz" \
+            -p "DockCommander-linux-x64.deb"
+          cmp dist/DockCommander-win-x64/DockCommander-win-x64.zip published/DockCommander-win-x64.zip
+          cmp dist/DockCommander-linux-x64/DockCommander-linux-x64.tar.gz published/DockCommander-linux-x64.tar.gz
+          cmp dist/DockCommander-linux-x64-deb/DockCommander-linux-x64.deb published/DockCommander-linux-x64.deb
+          (
+            cd published
+            sha256sum \
+              DockCommander-win-x64.zip \
+              DockCommander-linux-x64.tar.gz \
+              DockCommander-linux-x64.deb \
+              > SHA256SUMS.txt
+          )
+          gh release upload "$GITHUB_REF_NAME" published/SHA256SUMS.txt --clobber
