@@ -1,0 +1,85 @@
+name: macOS experimental
+
+# Optional Apple Silicon package. It is not part of the Windows or Linux release gate.
+# The application is built from an existing git ref, by default the Alpha tag.
+on:
+  workflow_dispatch:
+    inputs:
+      source_ref:
+        description: Application source git ref
+        required: true
+        default: v0.3.0-alpha.1
+      release_tag:
+        description: Existing GitHub release tag that should receive the DMG, or empty to skip
+        required: false
+        default: v0.3.0-alpha.1
+  push:
+    paths:
+      - .github/workflows/macos.yml
+      - packaging/macos/**
+
+permissions:
+  contents: read
+
+env:
+  AVALONIA_TELEMETRY_OPTOUT: 1
+  DOTNET_CLI_TELEMETRY_OPTOUT: 1
+  DOTNET_NOLOGO: 1
+
+jobs:
+  package:
+    name: osx-arm64
+    runs-on: macos-15
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout packaging scripts
+        uses: actions/checkout@v4
+        with:
+          path: packaging-tree
+      - name: Checkout application source
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.source_ref || 'v0.3.0-alpha.1' }}
+          path: source
+      - name: Record source commit
+        run: |
+          set -eu
+          sha=$(git -C source rev-parse HEAD)
+          echo "Application source: $sha"
+          echo "SOURCE_SHA=$sha" >> "$GITHUB_ENV"
+          if [ "${{ github.event_name == 'workflow_dispatch' && github.event.inputs.source_ref || 'v0.3.0-alpha.1' }}" = "v0.3.0-alpha.1" ]; then
+            test "$sha" = "bb63077344fb48ce5ed46b98eb73ff3b20a8315b"
+          fi
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 10.0.x
+      - name: Test
+        working-directory: source
+        run: dotnet test DockCommander.slnx --nologo
+      - name: Package
+        run: |
+          set -eu
+          chmod +x packaging-tree/packaging/macos/package.sh
+          sh packaging-tree/packaging/macos/package.sh source artifacts/DockCommander-macos-arm64.dmg
+      - uses: actions/upload-artifact@v4
+        with:
+          name: DockCommander-macos-arm64
+          path: |
+            artifacts/DockCommander-macos-arm64.dmg
+            artifacts/DockCommander-macos-arm64.dmg.sha256
+            artifacts/DockCommander-macos-arm64-EXPERIMENTAL.txt
+            artifacts/startup-smoke.log
+          if-no-files-found: error
+      - name: Attach to the existing release
+        if: github.event_name != 'workflow_dispatch' || github.event.inputs.release_tag != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ github.event.inputs.release_tag || 'v0.3.0-alpha.1' }}
+        run: |
+          set -eu
+          gh release upload "$RELEASE_TAG" \
+            artifacts/DockCommander-macos-arm64.dmg \
+            artifacts/DockCommander-macos-arm64.dmg.sha256 \
+            artifacts/DockCommander-macos-arm64-EXPERIMENTAL.txt \
+            --clobber
