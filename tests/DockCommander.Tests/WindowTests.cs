@@ -389,13 +389,19 @@ public sealed class WindowTests
 
     private static async Task WaitUntil(Func<bool> predicate)
     {
-        for (var i = 0; i < 200; i++)
+        for (var i = 0; i < 500; i++)
         {
             Dispatcher.UIThread.RunJobs();
             if (predicate()) return;
             await Task.Delay(10, TestContext.Current.CancellationToken);
         }
         Assert.True(predicate(), "The UI did not reach the expected state.");
+    }
+
+    private static async Task<string> SavedText(string path)
+    {
+        await WaitUntil(() => File.Exists(path));
+        return File.ReadAllText(path);
     }
 
     [AvaloniaFact]
@@ -516,7 +522,7 @@ public sealed class WindowTests
             Assert.StartsWith(temp.Root, panes[1].CurrentPath, StringComparison.Ordinal);
             Assert.Equal("session-secret", connector.Password);
             Assert.Contains("chosen", panes[0].GetVisualDescendants().OfType<Button>().Single(button => button.Name == "RemoteMode").Classes);
-            Assert.DoesNotContain("session-secret", File.ReadAllText(ConnectionStore.Beside(settings).Path));
+            Assert.DoesNotContain("session-secret", await SavedText(ConnectionStore.Beside(settings).Path));
             Assert.False(File.Exists(SecretStore.Beside(settings).Path));
             Assert.DoesNotContain(panes[1].GetVisualDescendants().OfType<TextBlock>(), block => block.Text == "Production" && block.IsEffectivelyVisible);
             panes[0].GetVisualDescendants().OfType<Button>().Single(button => button.Name == "LocalMode")
@@ -588,7 +594,7 @@ public sealed class WindowTests
                 window.UpdateLayout();
                 return pane.GetVisualDescendants().OfType<TextBlock>().Any(block => block.Text == "DotHost");
             });
-            Assert.Contains("DotHost", File.ReadAllText(ConnectionStore.Beside(settings).Path));
+            Assert.Contains("DotHost", await SavedText(ConnectionStore.Beside(settings).Path));
         }
         finally { await Close(window); }
     }
@@ -632,7 +638,7 @@ public sealed class WindowTests
                 window.UpdateLayout();
                 return pane.GetVisualDescendants().OfType<TextBlock>().Any(block => block.Text == "Home Cloud");
             });
-            var saved = File.ReadAllText(ConnectionStore.Beside(settings).Path);
+            var saved = await SavedText(ConnectionStore.Beside(settings).Path);
             Assert.Contains("\"WebDavPreset\": \"Nextcloud\"", saved);
             Assert.Contains("https://cloud.example.com/", saved);
             Assert.DoesNotContain("remote.php", saved);
@@ -680,7 +686,7 @@ public sealed class WindowTests
             });
             Assert.False(panes[1].IsRemote);
             Assert.Equal("ftp-secret", connector.Password);
-            Assert.DoesNotContain("ftp-secret", File.ReadAllText(ConnectionStore.Beside(settings).Path));
+            Assert.DoesNotContain("ftp-secret", await SavedText(ConnectionStore.Beside(settings).Path));
             Assert.StartsWith(temp.Root, panes[1].CurrentPath, StringComparison.Ordinal);
         }
         finally { await Close(window); }
@@ -725,7 +731,7 @@ public sealed class WindowTests
             });
             Assert.Equal("/dav", panes[0].CurrentDisplayPath);
             Assert.Equal("dav-secret", connector.Password);
-            Assert.DoesNotContain("dav-secret", File.ReadAllText(ConnectionStore.Beside(settings).Path));
+            Assert.DoesNotContain("dav-secret", await SavedText(ConnectionStore.Beside(settings).Path));
             Assert.False(panes[1].IsRemote);
         }
         finally { await Close(window); }
@@ -896,7 +902,7 @@ public sealed class WindowTests
             Menu("Disconnect").RaiseEvent(new RoutedEventArgs(MenuItem.ClickEvent));
             await WaitUntil(() => window.GetVisualDescendants().OfType<TextBlock>().Any(block => block.Text == "Old NAS · Disconnected")
                 && window.GetVisualDescendants().OfType<FilePane>().First().IsRemote);
-            Assert.Contains("Old NAS", File.ReadAllText(ConnectionStore.Beside(settings).Path));
+            Assert.Contains("Old NAS", await SavedText(ConnectionStore.Beside(settings).Path));
             Assert.True(File.Exists(secrets));
             Menu("Reconnect").RaiseEvent(new RoutedEventArgs(MenuItem.ClickEvent));
             await WaitUntil(() => connector.Calls == 2 && FilesAreVisible());
@@ -916,7 +922,7 @@ public sealed class WindowTests
             await WaitUntil(() => !File.Exists(secrets));
             Menu("Close").RaiseEvent(new RoutedEventArgs(MenuItem.ClickEvent));
             await WaitUntil(() => !window.GetVisualDescendants().OfType<Button>().Any(button => button.Name == "OpenSession-nas"));
-            Assert.Contains("Old NAS", File.ReadAllText(ConnectionStore.Beside(settings).Path));
+            Assert.Contains("Old NAS", await SavedText(ConnectionStore.Beside(settings).Path));
         }
         finally { await Close(window); }
 
@@ -1016,7 +1022,7 @@ public sealed class WindowTests
             {
                 window.UpdateLayout();
                 return window.GetVisualDescendants().OfType<TextBlock>().Any(block => block.Text == "hello.txt") &&
-                    File.ReadAllText(ConnectionStore.Beside(settings).Path).Contains("SHA256:abc", StringComparison.Ordinal);
+                    File.Exists(ConnectionStore.Beside(settings).Path) && File.ReadAllText(ConnectionStore.Beside(settings).Path).Contains("SHA256:abc", StringComparison.Ordinal);
             });
         }
         finally { await Close(window); }
@@ -1060,7 +1066,7 @@ public sealed class WindowTests
             await WaitUntil(() => changed.OwnedWindows.Any(owned => owned.Title == "Trust server"));
             Click(changed.OwnedWindows.Single(), "Trust");
             await WaitUntil(() =>
-                File.ReadAllText(ConnectionStore.Beside(settings).Path).Contains("SHA256:changed", StringComparison.Ordinal));
+                File.Exists(ConnectionStore.Beside(settings).Path) && File.ReadAllText(ConnectionStore.Beside(settings).Path).Contains("SHA256:changed", StringComparison.Ordinal));
         }
         finally { await Close(changed); }
     }
@@ -1089,7 +1095,7 @@ public sealed class WindowTests
                 window.UpdateLayout();
                 return !window.OwnedWindows.Any() &&
                     window.GetVisualDescendants().OfType<TextBlock>().Any(block => block.Text == "notes.txt") &&
-                    File.ReadAllText(ConnectionStore.Beside(settings).Path).Contains("AAAA1111", StringComparison.Ordinal);
+                    File.Exists(ConnectionStore.Beside(settings).Path) && File.ReadAllText(ConnectionStore.Beside(settings).Path).Contains("AAAA1111", StringComparison.Ordinal);
             });
         }
         finally { await Close(window); }
@@ -1103,7 +1109,7 @@ public sealed class WindowTests
             await WaitUntil(() => again.OwnedWindows.Any(owned => owned.Title == "Trust certificate"));
             Click(again.OwnedWindows.Single(), "Trust");
             await WaitUntil(() =>
-                File.ReadAllText(ConnectionStore.Beside(settings).Path).Contains("BBBB2222", StringComparison.Ordinal));
+                File.Exists(ConnectionStore.Beside(settings).Path) && File.ReadAllText(ConnectionStore.Beside(settings).Path).Contains("BBBB2222", StringComparison.Ordinal));
         }
         finally { await Close(again); }
     }

@@ -11,6 +11,8 @@ internal static class MacVolumeCase
 {
     const int CaseSensitiveName = 11;
     static readonly ConcurrentDictionary<string, int> Cache = new(StringComparer.Ordinal);
+    static readonly object MountGate = new();
+    static string[] MountCache = [];
 
     public static StringComparer ComparerFor(string path) => FromResult(Sensitivity(path));
 
@@ -29,7 +31,7 @@ internal static class MacVolumeCase
         var full = path;
         try { full = Path.GetFullPath(path); }
         catch (Exception ex) when (ex is ArgumentException or NotSupportedException or PathTooLongException) { }
-        var mount = SelectMount(full, Mounts());
+        var mount = SelectMount(full, Mounts(full));
         var code = Cache.GetOrAdd(mount, static root => Query(root));
         return code < 0 ? null : code;
     }
@@ -54,7 +56,23 @@ internal static class MacVolumeCase
         return best;
     }
 
-    static IReadOnlyList<string> Mounts()
+    static IReadOnlyList<string> Mounts(string fullPath)
+    {
+        lock (MountGate)
+        {
+            if (MountCache.Length == 0 || NeedsMountRefresh(MountCache, fullPath))
+                MountCache = LoadMounts();
+            return MountCache;
+        }
+    }
+
+    static bool NeedsMountRefresh(IReadOnlyList<string> mounts, string fullPath)
+    {
+        if (!fullPath.StartsWith("/Volumes/", StringComparison.Ordinal)) return false;
+        return SelectMount(fullPath, mounts) == "/";
+    }
+
+    static string[] LoadMounts()
     {
         try
         {
