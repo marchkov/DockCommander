@@ -93,6 +93,8 @@ cat > "$app/Contents/Info.plist" <<EOF
 EOF
 printf 'APPL????' > "$app/Contents/PkgInfo"
 
+# Publish marks managed libraries executable. codesign then treats them as unsigned nested code.
+find "$app/Contents/MacOS" -name '*.dll' -exec chmod a-x {} +
 echo "Checking Mach-O architecture"
 find "$app/Contents" -type f > "$work/files.txt"
 while IFS= read -r file; do
