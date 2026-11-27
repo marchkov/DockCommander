@@ -75,18 +75,22 @@ jobs:
         if: startsWith(github.ref, 'refs/tags/v') || (github.event_name == 'workflow_dispatch' && github.event.inputs.release_tag != '')
         env:
           GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
           RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.release_tag || github.ref_name }}
         run: |
           set -eu
+          tagged=$(gh api "repos/${GITHUB_REPOSITORY}/commits/${RELEASE_TAG}" --jq .sha)
+          test "$SOURCE_SHA" = "$tagged"
           ready=0
           for _ in $(seq 1 60); do
-            if gh release view "$RELEASE_TAG" --json assets --jq '.assets[].name' > assets.txt 2>/dev/null \
+            if gh release view "$RELEASE_TAG" --json assets --jq '.assets[].name' > assets.txt \
               && grep -qx "DockCommander-win-x64.zip" assets.txt \
               && grep -qx "DockCommander-linux-x64.tar.gz" assets.txt \
               && grep -qx "DockCommander-linux-x64.deb" assets.txt; then
               ready=1
               break
             fi
+            echo "Waiting for the Windows and Linux assets on $RELEASE_TAG"
             sleep 20
           done
           test "$ready" = 1
