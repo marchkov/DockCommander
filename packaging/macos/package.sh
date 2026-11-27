@@ -118,7 +118,11 @@ while IFS= read -r file; do
       case "$description" in
         *x86_64*) echo "Unexpected Intel slice: $file ($description)" >&2; exit 1 ;;
       esac
-      codesign --force --sign - "$file" || exit 1
+      # The main executable is signed with the bundle. Signing it alone makes codesign
+      # treat the surrounding managed libraries as unsigned nested code.
+      if [ "$file" != "$app/Contents/MacOS/DC" ]; then
+        codesign --force --sign - "$file" || exit 1
+      fi
       ;;
   esac
 done < "$work/files.txt"
