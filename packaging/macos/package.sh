@@ -128,8 +128,9 @@ while IFS= read -r file; do
       ;;
   esac
 done < "$work/files.txt"
-codesign --force --sign - "$app"
-codesign --verify --deep --strict --verbose=2 "$app"
+# --deep seals the managed libraries that sit beside the executable. Hardened runtime stays off so the JIT can run.
+codesign --force --deep --sign - "$app" || exit 1
+codesign --verify --deep --strict --verbose=2 "$app" || exit 1
 
 cat > "$work/EXPERIMENTAL.txt" <<EOF
 DockCommander ${version} experimental macOS ARM64 build
