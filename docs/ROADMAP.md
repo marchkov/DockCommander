@@ -1,6 +1,6 @@
 # DockCommander — актуальный план
 
-Обновлено 26 ноября 2026. Версия: 0.3.0-alpha.1.
+Обновлено 27 ноября 2026. Версия: 0.3.0-alpha.2.
 Локальный файловый менеджер принят. SFTP, FTP, FTPS и WebDAV работают в панелях. Встроенный редактор F4 входит в эту Alpha.
 Поиск файлов и размер каталога — последние функции файлового менеджера перед первой Alpha. Дальше, до проверки в реальной работе, допускаются только исправления надёжности.
 Подсветка синтаксиса, вкладки и языковые серверы в этот этап не входят.
@@ -24,7 +24,8 @@
 - Корзина Windows и Linux/GIO, отдельное подтверждение permanent delete.
 - Безопасное staged-copy поведение и проверки ссылок/reparse points.
 - Windows/Linux packaging, проверка Microsoft.NETCore.App 10 x64, Linux menu entry и .deb.
-- GitHub Actions проверяет Windows и Ubuntu до сборки/release.
+- GitHub Actions проверяет Windows и Ubuntu до сборки/release. macOS ARM64 проверяется отдельно и не блокирует Windows и Linux.
+- Экспериментальная сборка macOS Apple Silicon: системные пути `/tmp`, `/var`, `/etc`, корзина через NSFileManager, Home и `/Volumes`. Это не стабильная поддержка и не сборка для Intel.
 
 ### Remote UI и профили
 
@@ -33,7 +34,7 @@
 - Есть поиск соединений, `Add connection`, редактирование профилей и список соединений.
 - Профиль хранит протокол, host, port, username, initial path и authentication mode.
 - Пароли, passphrase и private-key данные не записываются открытым текстом в `settings.json` или `connections.json`.
-- Windows использует DPAPI CurrentUser. Linux использует отдельный AES key с правами пользователя.
+- Windows использует DPAPI CurrentUser. Linux и macOS используют отдельный AES key: файл ключа `0600`, каталог `0700`. Связка ключей macOS не используется.
 - Host key SFTP и TLS certificate FTP/FTPS подтверждаются для конкретного connection profile
   и спрашиваются снова при изменении fingerprint.
 

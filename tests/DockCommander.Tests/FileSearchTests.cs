@@ -221,6 +221,17 @@ public sealed class FolderSizeTests
         gate.End();
         Assert.True(gate.TryBegin("/other", StringComparer.Ordinal));
     }
+
+    [Fact]
+    public async Task FindFilesUsesTheDirectoryComparer()
+    {
+        var files = new TreeFiles(StringComparer.Ordinal);
+        files.Add(new("Alpha.txt", "/Alpha.txt", false, 1, null), "/");
+        files.NameComparer = _ => StringComparer.Ordinal;
+        Assert.Empty((await FileSearch.SearchAsync(files, "/", "a*")).Hits);
+        files.NameComparer = _ => StringComparer.OrdinalIgnoreCase;
+        Assert.Equal("Alpha.txt", Assert.Single((await FileSearch.SearchAsync(files, "/", "a*")).Hits).Name);
+    }
 }
 
 internal sealed class TreeFiles : IFileSystemProvider
@@ -253,6 +264,8 @@ internal sealed class TreeFiles : IFileSystemProvider
     public string DisplayName => "Tree";
     public bool SupportsRecycle => false;
     public StringComparer PathComparer { get; }
+    public Func<string, StringComparer>? NameComparer { get; set; }
+    public StringComparer ComparerFor(string path) => NameComparer?.Invoke(path) ?? PathComparer;
     public bool CanHandle(string path) => true;
     public string NormalizePath(string path) => path;
     public string CombinePath(string directory, string name) => directory.TrimEnd('/') + "/" + name;

@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.3.0-alpha.2
+
+- Experimental Apple Silicon support. The macOS build is a self-contained `osx-arm64` app, ad-hoc signed and not notarized. It is not a stable release and does not support Intel Macs. See [docs/MACOS.md](docs/MACOS.md).
+- `/tmp`, `/var` and `/etc` are accepted when those macOS aliases really point at `/private/tmp`, `/private/var` and `/private/etc`. Other symbolic links and junctions are still rejected. Windows and Linux path checks are unchanged.
+- Saved connection secrets on macOS and Linux use an owner-only key file (`0600`) and directory (`0700`). The files are created with those permissions, existing files are tightened, and a save fails instead of leaving them readable by other accounts. Windows still uses DPAPI. There is no macOS Keychain integration.
+- Local file names on macOS are compared with `pathconf` for the volume that contains the path. A case-sensitive volume and a case-insensitive volume are not forced into one rule. If the volume cannot be identified, collisions are treated as case-insensitive and the filesystem is still asked whether the destination exists.
+- F8 on a local macOS pane uses `NSFileManager` Trash. It does not fall back to permanent deletion. Shift+F8 still deletes permanently after confirmation. Remote panes still delete permanently.
+- The macOS location row lists Home, the filesystem root, and mounted volumes under `/Volumes`, without a second entry for the boot volume when its device id is available.
+
 ## 0.3.0-alpha.1
 
 - Find files (Ctrl+F or Alt+F7) searches file and folder names from the current directory, including a remote connection. Space calculates the current folder size. These are the last file-manager features before the Alpha freeze.

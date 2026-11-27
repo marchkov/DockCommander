@@ -17,7 +17,10 @@ public sealed class LocalFileSystemProvider(ITrashService? trash = null) : IFile
         await Task.Run(() => ValidateMutationPath(path), cancellationToken);
         return await GetEntryAsync(path, cancellationToken) ?? throw new FileNotFoundException("The dropped item no longer exists.", path);
     }
-    public StringComparer PathComparer => OperatingSystem.IsWindows() ? StringComparer.OrdinalIgnoreCase : StringComparer.Ordinal;
+    public StringComparer PathComparer => OperatingSystem.IsWindows() ? StringComparer.OrdinalIgnoreCase :
+        OperatingSystem.IsMacOS() ? MacPathComparer.Instance : StringComparer.Ordinal;
+    public StringComparer ComparerFor(string path) =>
+        OperatingSystem.IsMacOS() ? MacVolumeCase.ComparerFor(path) : PathComparer;
     public bool CanHandle(string path) => !string.IsNullOrWhiteSpace(path) && Path.IsPathFullyQualified(path);
     public string NormalizePath(string path) => Path.TrimEndingDirectorySeparator(Path.GetFullPath(path));
 
@@ -39,15 +42,24 @@ public sealed class LocalFileSystemProvider(ITrashService? trash = null) : IFile
 
     public bool IsSameOrDescendant(string path, string ancestor)
     {
-        path = NormalizePath(path);
-        ancestor = NormalizePath(ancestor);
+        path = Identity(path);
+        ancestor = Identity(ancestor);
+        var comparison = OperatingSystem.IsWindows() ? StringComparison.OrdinalIgnoreCase :
+            OperatingSystem.IsMacOS() ? MacVolumeCase.Comparison(MacVolumeCase.Sensitivity(ancestor), MacVolumeCase.Sensitivity(path)) :
+            StringComparison.Ordinal;
         var prefix = Path.EndsInDirectorySeparator(ancestor) ? ancestor : ancestor + Path.DirectorySeparatorChar;
-        return PathComparer.Equals(path, ancestor) || path.StartsWith(prefix,
-            OperatingSystem.IsWindows() ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal);
+        return string.Equals(path, ancestor, comparison) || path.StartsWith(prefix, comparison);
+    }
+
+    static string Identity(string path)
+    {
+        var full = Path.TrimEndingDirectorySeparator(Path.GetFullPath(path));
+        return OperatingSystem.IsMacOS() ? MacSystemPaths.Canonicalize(full) : full;
     }
 
     public Task<IReadOnlyList<LocationEntry>> GetLocationsAsync(CancellationToken cancellationToken = default) => Task.Run<IReadOnlyList<LocationEntry>>(() =>
     {
+        if (OperatingSystem.IsMacOS()) return MacLocations.List(cancellationToken);
         var locations = new List<LocationEntry>();
         var linux = OperatingSystem.IsLinux();
         if (linux)
@@ -113,13 +125,16 @@ public sealed class LocalFileSystemProvider(ITrashService? trash = null) : IFile
     }
 
     // Reject linked components for mutations so junctions cannot alias the source
-    // or let recursive operations escape the chosen directory.
+    // or let recursive operations escape the chosen directory. The three macOS system
+    // aliases are rewritten to their verified targets first; other links stay rejected.
+    // The check and the later filesystem call are not one atomic operation.
     public static void ValidateMutationPath(string path)
     {
         var full = Path.GetFullPath(path);
-        if (Path.TrimEndingDirectorySeparator(full) == Path.TrimEndingDirectorySeparator(Path.GetPathRoot(full)!))
+        var canonical = OperatingSystem.IsMacOS() ? MacSystemPaths.Canonicalize(full) : full;
+        if (IsRoot(full) || IsRoot(canonical))
             throw new IOException("Operations on a filesystem root are not allowed.");
-        for (string? current = full; current is not null; current = Path.GetDirectoryName(current))
+        for (string? current = canonical; current is not null; current = Path.GetDirectoryName(current))
         {
             try
             {
@@ -130,6 +145,9 @@ public sealed class LocalFileSystemProvider(ITrashService? trash = null) : IFile
             catch (DirectoryNotFoundException) { }
         }
     }
+
+    static bool IsRoot(string path) =>
+        Path.TrimEndingDirectorySeparator(path) == Path.TrimEndingDirectorySeparator(Path.GetPathRoot(path)!);
 
     public Task CreateDirectoryAsync(string path, CancellationToken cancellationToken = default) => Task.Run(() =>
     {
@@ -358,11 +376,45 @@ public sealed class LocalFileSystemProvider(ITrashService? trash = null) : IFile
         var attributes = File.GetAttributes(source);
         if (string.Equals(source, destination, StringComparison.Ordinal)) return destination;
         // Never overwrite or merge. The OS move also checks collisions at execution time.
-        if (!PathComparer.Equals(source, destination) && (File.Exists(destination) || Directory.Exists(destination)))
+        var sameName = OperatingSystem.IsMacOS()
+            ? string.Equals(source, destination, MacVolumeCase.Comparison(MacVolumeCase.Sensitivity(source), null))
+            : PathComparer.Equals(source, destination);
+        if (!sameName && (File.Exists(destination) || Directory.Exists(destination)))
             throw new IOException("An entry with this name already exists. Choose another name.");
         cancellationToken.ThrowIfCancellationRequested();
-        if (attributes.HasFlag(FileAttributes.Directory)) Directory.Move(source, destination);
+        var directory = attributes.HasFlag(FileAttributes.Directory);
+        var caseOnly = OperatingSystem.IsMacOS() && sameName &&
+            !string.Equals(source, destination, StringComparison.Ordinal);
+        if (caseOnly)
+        {
+            MoveCaseOnly(source, destination, directory);
+            return destination;
+        }
+        if (directory) Directory.Move(source, destination);
         else File.Move(source, destination, false);
         return destination;
     }, cancellationToken);
+
+    // Case-insensitive volumes refuse a direct rename that changes only letter case.
+    // A temporary name on the same volume keeps the requested spelling. The second move
+    // does not overwrite; a failure puts the original name back when the filesystem still allows it.
+    static void MoveCaseOnly(string source, string destination, bool directory)
+    {
+        var transient = Path.Combine(Path.GetDirectoryName(destination)!, ".dc-case-" + Guid.NewGuid().ToString("N"));
+        Move(source, transient);
+        try { Move(transient, destination); }
+        catch
+        {
+            try { Move(transient, source); }
+            catch (IOException) { }
+            catch (UnauthorizedAccessException) { }
+            throw;
+        }
+
+        void Move(string from, string to)
+        {
+            if (directory) Directory.Move(from, to);
+            else File.Move(from, to, false);
+        }
+    }
 }

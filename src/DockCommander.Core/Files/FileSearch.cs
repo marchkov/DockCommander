@@ -14,7 +14,7 @@ public static class FileSearch
         {
             var skipped = await ProviderTreeWalker.WalkAsync(provider, directory, (entry, parent, _) =>
             {
-                if (!NameMask.Matches(pattern, entry.Name, provider.PathComparer)) return ValueTask.CompletedTask;
+                if (!NameMask.Matches(pattern, entry.Name, provider.ComparerFor(directory))) return ValueTask.CompletedTask;
                 var hit = new FileSearchHit(entry.Name, entry.FullPath, parent, entry.IsDirectory, entry.IsDirectory ? null : entry.Size);
                 hits.Add(hit);
                 onFound?.Invoke(hit);

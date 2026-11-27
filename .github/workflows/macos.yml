@@ -1,22 +1,21 @@
 name: macOS experimental
 
-# Optional Apple Silicon package. It is not part of the Windows or Linux release gate.
-# The application is built from an existing git ref, by default the Alpha tag.
+# Apple Silicon tests and package. This workflow is not part of the Windows or Linux release gate.
+# A push builds the pushed commit and uploads the DMG as a workflow artifact only.
+# Attaching that DMG to a GitHub release requires a manual run with a release tag.
 on:
   workflow_dispatch:
     inputs:
       source_ref:
-        description: Application source git ref
-        required: true
-        default: v0.3.0-alpha.1
-      release_tag:
-        description: Existing GitHub release tag that should receive the DMG, or empty to skip
+        description: Application source git ref. Empty uses the workflow commit.
         required: false
-        default: v0.3.0-alpha.1
+        default: ""
+      release_tag:
+        description: Existing GitHub release tag that should receive the DMG. Empty does not upload.
+        required: false
+        default: ""
   push:
-    paths:
-      - .github/workflows/macos.yml
-      - packaging/macos/**
+    branches: [main]
 
 permissions:
   contents: read
@@ -40,7 +39,7 @@ jobs:
       - name: Checkout application source
         uses: actions/checkout@v4
         with:
-          ref: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.source_ref || 'v0.3.0-alpha.1' }}
+          ref: ${{ github.event.inputs.source_ref != '' && github.event.inputs.source_ref || github.sha }}
           path: source
       - name: Record source commit
         run: |
@@ -48,9 +47,6 @@ jobs:
           sha=$(git -C source rev-parse HEAD)
           echo "Application source: $sha"
           echo "SOURCE_SHA=$sha" >> "$GITHUB_ENV"
-          if [ "${{ github.event_name == 'workflow_dispatch' && github.event.inputs.source_ref || 'v0.3.0-alpha.1' }}" = "v0.3.0-alpha.1" ]; then
-            test "$sha" = "bb63077344fb48ce5ed46b98eb73ff3b20a8315b"
-          fi
       - uses: actions/setup-dotnet@v4
         with:
           dotnet-version: 10.0.x
@@ -71,11 +67,11 @@ jobs:
             artifacts/DockCommander-macos-arm64-EXPERIMENTAL.txt
             artifacts/startup-smoke.log
           if-no-files-found: error
-      - name: Attach to the existing release
-        if: github.event_name != 'workflow_dispatch' || github.event.inputs.release_tag != ''
+      - name: Attach to an existing release
+        if: github.event_name == 'workflow_dispatch' && github.event.inputs.release_tag != ''
         env:
           GH_TOKEN: ${{ github.token }}
-          RELEASE_TAG: ${{ github.event.inputs.release_tag || 'v0.3.0-alpha.1' }}
+          RELEASE_TAG: ${{ github.event.inputs.release_tag }}
         run: |
           set -eu
           gh release upload "$RELEASE_TAG" \

@@ -78,24 +78,34 @@ internal sealed class SecretStore
 
     private async Task<Dictionary<string, string>> ReadAsync()
     {
+        SecretProtector.RejectIfLink(_path);
         if (!File.Exists(_path)) return new(StringComparer.Ordinal);
+        SecretProtector.EnsureOwnerOnly(_path, directory: false);
         var entries = JsonSerializer.Deserialize<Dictionary<string, string>>(await File.ReadAllTextAsync(_path));
         return entries ?? new(StringComparer.Ordinal);
     }
 
     private async Task WriteAsync(Dictionary<string, string> entries)
     {
+        SecretProtector.RejectIfLink(_path);
         if (entries.Count == 0)
         {
             if (File.Exists(_path)) File.Delete(_path);
             return;
         }
-        Directory.CreateDirectory(KeyDirectory());
+        var directory = KeyDirectory();
+        Directory.CreateDirectory(directory);
+        SecretProtector.RejectIfLink(directory);
+        SecretProtector.EnsureOwnerOnly(directory, directory: true);
         var temporary = _path + ".tmp";
-        await File.WriteAllTextAsync(temporary, JsonSerializer.Serialize(entries));
-        SecretProtector.TryRestrict(temporary);
+        SecretProtector.RejectIfLink(temporary);
+        var json = JsonSerializer.Serialize(entries);
+        if (OperatingSystem.IsWindows())
+            await File.WriteAllTextAsync(temporary, json);
+        else
+            SecretProtector.CreateOwnerFile(temporary, System.Text.Encoding.UTF8.GetBytes(json));
         File.Move(temporary, _path, true);
-        SecretProtector.TryRestrict(_path);
+        SecretProtector.EnsureOwnerOnly(_path, directory: false);
     }
 }
 
@@ -103,6 +113,7 @@ internal static class SecretProtector
 {
     public static string Protect(string text, string keyDirectory)
     {
+        RejectIfLink(keyDirectory);
         var plain = Encoding.UTF8.GetBytes(text);
         if (OperatingSystem.IsWindows())
             return "dpapi:" + Convert.ToBase64String(ProtectedData.Protect(plain, null, DataProtectionScope.CurrentUser));
@@ -123,6 +134,7 @@ internal static class SecretProtector
     {
         try
         {
+            RejectIfLink(keyDirectory);
             if (protectedValue.StartsWith("dpapi:", StringComparison.Ordinal))
             {
                 if (!OperatingSystem.IsWindows()) return null;
@@ -146,21 +158,69 @@ internal static class SecretProtector
         }
     }
 
-    public static void TryRestrict(string path)
+    public static void RejectIfLink(string path)
     {
-        if (!OperatingSystem.IsLinux()) return;
-        File.SetUnixFileMode(path, UnixFileMode.UserRead | UnixFileMode.UserWrite);
+        try
+        {
+            if (File.ResolveLinkTarget(path, returnFinalTarget: false) is not null)
+                throw new IOException("Credential storage must not follow a symbolic link.");
+        }
+        catch (FileNotFoundException) { }
+        catch (DirectoryNotFoundException) { }
+    }
+
+    public static void EnsureOwnerOnly(string path, bool directory)
+    {
+        if (OperatingSystem.IsWindows() || !File.Exists(path) && !Directory.Exists(path)) return;
+        var allowed = directory
+            ? UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute
+            : UnixFileMode.UserRead | UnixFileMode.UserWrite;
+        File.SetUnixFileMode(path, allowed);
+        var actual = File.GetUnixFileMode(path);
+        if ((actual & allowed) != allowed || (actual & ~allowed) != 0)
+            throw new IOException("Credential storage could not be restricted to the current user.");
+    }
+
+    internal static void CreateOwnerFile(string path, ReadOnlySpan<byte> content)
+    {
+        if (OperatingSystem.IsWindows()) throw new PlatformNotSupportedException();
+        var options = new FileStreamOptions
+        {
+            Mode = FileMode.CreateNew,
+            Access = FileAccess.Write,
+            Share = FileShare.None
+        };
+        options.UnixCreateMode = UnixFileMode.UserRead | UnixFileMode.UserWrite;
+        try
+        {
+            using (var stream = new FileStream(path, options))
+                stream.Write(content);
+            EnsureOwnerOnly(path, directory: false);
+        }
+        catch
+        {
+            try { if (File.Exists(path)) File.Delete(path); }
+            catch (IOException) { }
+            catch (UnauthorizedAccessException) { }
+            throw;
+        }
     }
 
     private static byte[] Key(string keyDirectory)
     {
         Directory.CreateDirectory(keyDirectory);
+        RejectIfLink(keyDirectory);
+        EnsureOwnerOnly(keyDirectory, directory: true);
         var keyPath = System.IO.Path.Combine(keyDirectory, "protector.key");
+        RejectIfLink(keyPath);
         if (!File.Exists(keyPath))
         {
-            File.WriteAllBytes(keyPath, RandomNumberGenerator.GetBytes(32));
-            TryRestrict(keyPath);
+            var bytes = RandomNumberGenerator.GetBytes(32);
+            if (OperatingSystem.IsWindows()) File.WriteAllBytes(keyPath, bytes);
+            else CreateOwnerFile(keyPath, bytes);
         }
+        else
+            EnsureOwnerOnly(keyPath, directory: false);
         var key = File.ReadAllBytes(keyPath);
         if (key.Length != 32) throw new IOException("The secret key file is unusable.");
         return key;

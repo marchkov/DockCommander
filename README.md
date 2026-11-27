@@ -64,11 +64,14 @@ a DockCommander entry to the application menu. `packaging/linux/uninstall.sh` re
 copy. `packaging/linux/build-deb.sh` builds a `.deb` that depends on `dotnet-runtime-10.0` and the
 native libraries, and installs the same menu entry for all users.
 
+macOS is experimental and only for Apple Silicon. The `.dmg` bundles the .NET runtime, is ad-hoc signed, and is not notarized. It is not a stable platform. Install and first-launch notes are in [docs/MACOS.md](docs/MACOS.md).
+
 ## Implemented
 
 - Two equal panes with independent drive buttons and editable paths.
 - Compact location buttons with full-path tooltips and an adaptive «More ▾» overflow menu.
   Linux includes home/root shortcuts and hides system mounts; WSL drives use C:/D: labels.
+  macOS lists Home, the filesystem root, and mounted volumes under `/Volumes`.
 - Light and dark themes with a compact toolbar switch; the choice is saved on close.
 - Integrated title bar with custom minimize, maximize/restore and close buttons.
   Drag its empty area to move the window; double-click to maximize/restore; drag edges to resize.

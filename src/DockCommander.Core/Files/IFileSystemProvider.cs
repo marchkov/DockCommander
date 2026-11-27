@@ -12,6 +12,8 @@ public interface IFileSystemProvider
     Task<FileEntry> ResolveDroppedFileAsync(string localPath, CancellationToken cancellationToken = default) =>
         Task.FromException<FileEntry>(new NotSupportedException("This provider cannot accept files from other applications."));
     StringComparer PathComparer { get; }
+    // Name and path checks that belong to one directory. The default is the provider-wide comparer.
+    StringComparer ComparerFor(string path) => PathComparer;
     bool CanHandle(string path);
     string NormalizePath(string path);
     string DisplayPath(string path) => path;

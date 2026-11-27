@@ -121,18 +121,22 @@ Architecture: osx-arm64, self-contained, not trimmed, not Native AOT
 Bundle identifier: cz.marchkov.dockcommander
 Signature: ad-hoc. This build is not signed with a Developer ID and is not notarized.
 
-Gatekeeper will warn on first launch. Do not turn Gatekeeper off.
-To open this copy, right-click DockCommander.app, choose Open, then choose Open again.
+This build is experimental Apple Silicon only. It is not a stable macOS release
+and it is not an Intel build.
 
-This build has no Trash integration. F8 asks to delete the selected items permanently
-and does not move them to the Trash. Read that confirmation before accepting it.
-Shift+F8 is also a permanent delete.
+Gatekeeper will warn on first launch. Do not turn Gatekeeper off and do not clear
+the quarantine flag for the whole disk. Use System Settings, Privacy & Security,
+Open Anyway. You can also right-click DockCommander.app, choose Open, then Open again.
 
-Saved connection secrets are encrypted with a key file beside them. Unlike Linux,
-that key file is not restricted to the current user account. Do not save passwords
-on a Mac that other local accounts can read.
+F8 moves local items to the Trash. A Trash failure does not delete them permanently.
+Shift+F8 deletes permanently after confirmation. Remote connections still delete
+permanently, after the same confirmation.
 
-Paths are compared case-sensitively. The usual APFS volume is case-insensitive.
+Saved connection secrets are encrypted with a key file restricted to the current
+user (mode 0600, directory mode 0700). This build does not use the macOS Keychain.
+
+File name case follows the volume. /tmp, /var and /etc are accepted only when they
+point at /private/tmp, /private/var and /private/etc. Other symbolic links are refused.
 There is no Finder context menu. Dragging files to or from Finder was not part of
 the automated checks.
 EOF

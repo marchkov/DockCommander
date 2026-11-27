@@ -70,7 +70,8 @@ public sealed class MainWindow : Window
     private static IFileSystemProvider CreateLocalProvider()
     {
         ITrashService trash = OperatingSystem.IsWindows() ? new WindowsTrashService() :
-            OperatingSystem.IsLinux() ? new LinuxTrashService() : new UnsupportedTrashService();
+            OperatingSystem.IsLinux() ? new LinuxTrashService() :
+            OperatingSystem.IsMacOS() ? new MacTrashService() : new UnsupportedTrashService();
         return new LocalFileSystemProvider(trash);
     }
 
