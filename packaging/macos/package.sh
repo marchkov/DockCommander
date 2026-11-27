@@ -99,6 +99,18 @@ while IFS= read -r file; do
   description=$(file -b "$file")
   case "$description" in
     *Mach-O*)
+      # Skia ships universal binaries. Keep the arm64 slice so the bundle is Apple Silicon only.
+      case "$description" in
+        *x86_64*)
+          case "$description" in
+            *arm64*)
+              lipo "$file" -thin arm64 -output "$file.arm64" || exit 1
+              mv "$file.arm64" "$file"
+              description=$(file -b "$file")
+              ;;
+          esac
+          ;;
+      esac
       case "$description" in
         *arm64*) ;;
         *) echo "Not an arm64 Mach-O file: $file ($description)" >&2; exit 1 ;;
